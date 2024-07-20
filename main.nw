@@ -1,0 +1,6084 @@
+\documentclass[10pt]{report}
+\setlength{\parskip}{1em plus 0.1em minus 0.2em}
+\usepackage {amsmath}
+\usepackage {noweb}
+\usepackage {graphicx}
+\usepackage{ltablex}
+\usepackage {caption, booktabs}
+% For more space between table rows.
+\newcommand{\ra}[1]{\renewcommand{\arraystretch}{#1}}
+
+% To prevent floatables like tables from leaving their sections.
+\usepackage[section]{placeins}
+
+% To make \thead in tables bold.
+\usepackage{makecell}
+\renewcommand\theadfont{\bfseries}
+
+
+\graphicspath { {./images/} }
+
+\usepackage[table,dvipsnames]{xcolor}
+\definecolor {apple_white}{rgb}{0.9,0.9,0.9}
+\def \bk0 {\cellcolor{black}}
+\def \bl0 {\cellcolor{Cerulean}}
+\def \bw0 {\cellcolor{apple_white}}
+\def \bo0 {\cellcolor{orange}}
+
+\usepackage[colorlinks=true, urlcolor=blue, linkcolor=red]{hyperref}
+
+\usepackage {booktabs}
+
+% https://tug.ctan.org/info/visualtikz/VisualTikZ.pdf is very helpful
+% for understanding tikz.
+
+\usepackage {tikz}
+\usetikzlibrary {positioning, shapes.geometric, shapes.multipart, svg.path, arrows.meta, quotes, calc, decorations.pathreplacing}
+\tikzstyle{startstop} = [rectangle, rounded corners, font=\tiny, minimum width=1cm, minimum height=0.3cm,text centered, draw=black, fill=blue!30]
+\tikzstyle{process} = [rectangle, text width=1cm, minimum width=1cm, font=\tiny, minimum height=0.3cm, text centered, draw=black, fill=orange!30]
+\tikzstyle{decision} = [diamond, aspect=2, text width=1.2cm, minimum width=1cm, font=\tiny, minimum height=0.3cm, text centered, draw=black, fill=green!30]
+\tikzstyle{splitstackbox} = [rectangle split, rectangle split parts=2, rectangle split horizontal, text width=4.984cm, minimum width=4.984cm, minimum height=0.5cm, text centered, draw=black, thick, inner xsep=0cm]
+\tikzstyle{fullstackbox} = [rectangle, text width=10cm, minimum width=10cm, minimum height=0.5cm, text centered, draw=black, thick, inner xsep=0cm]
+\tikzstyle{tallstackbox} = [rectangle, text width=10cm, minimum width=10cm, minimum height=1.2cm, text centered, draw=black, thick, inner xsep=0cm]
+
+
+\noweboptions {smallcode,longchunks}
+
+% noweb: You should compile the icon compiler from
+% https://github.com/gtownsend/icon and then configure
+% noweb to use it. Then compile and install noweb. This prevents issues
+% with awk.
+%
+% Generate assembly file with:
+% notangle -Rpreamble main.nw > main.asm
+%
+% Generate tex file with:
+% noweave -delay -index main.nw > main.tex
+% pdflatex main.tex (run twice for two passes)
+%
+% See also: https://www.cs.tufts.edu/~nr/noweb/johnson-lj.pdf
+
+\title{The Zork I Z-machine Interpreter}
+\author{Robert Baruch}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\pagestyle{noweb}
+
+@ \chapter{Zork I}
+
+\section{Introduction}
+
+\textbf{Zork I: The Great Underground Empire} was an Infocom text adventure originally written as part of Zork in 1977 by Tim Anderson, Marc Blank, Bruce Daniels, and Dave Lebling. The game runs under a virtual machine called the Z-Machine. Thus, only the Z-Machine interpreter needed to be ported for the game to be playable on various machines.
+
+The purpose of this document is to reverse engineer the Z-Machine interpreter
+found in various versions of Zork I for the Apple II. The disk images used are
+from the Internet Archive:
+\begin{itemize}
+  \item \href{https://archive.org/details/ZorkI_r15_4amCrack}{Zork I, revision 15 ([[ZorkI_r15_4amCrack]])}
+\end{itemize}
+
+The original Infocom assembly language files are \href{https://eblong.com/infocom/#terps}{available}.
+The directory for the Apple II contains the original source code for various Z-Machine interpreters. Version 3 is called [[ZIP]], version 4 is [[EZIP]], version 5 is [[XZIP]], and version 6 is [[YZIP]].
+There is also a directory [[OLDZIP]] which seems to correspond to this version, version 2, although
+there are a few differences.
+
+\section{About this document}
+
+This is a literate programming document. This means the explanatory text is
+interspersed with source code. The source code can be extracted from the document
+and compiled.
+
+The goal is to provide all the source code necessary to reproduce a binary
+identical to the one found on the Internet Archive's [[ZorkI_r15_4amCrack]]
+disk image.
+
+The assembly code is assembled using [[dasm]].
+
+This document doesn't explain every last detail. It's assumed that the reader can
+find enough details on the 6502 processor and the Apple II series of computers
+to fill in the gaps.
+
+\chapter{Programming techniques}
+
+\section{Zero page temporaries}
+
+Zero-page consists essentially of global variables. Sometimes we need local
+temporaries, and Apple II programs mostly doesn't use the stack for those. Rather,
+some ``global'' variables are reserved for temporaries. You might see multiple
+symbols equated to a single zero-page location. The names of such symbols are
+used to make sense within their context.
+
+\section{Tail calls}
+
+Rather than a [[JSR]] immediately followed by an [[RTS]], instead a [[JMP]]
+can be used to save stack space, code space, and time. This is known as a
+tail call, because it is a call that happens at the tail of a function.
+
+\section{Unconditional branches}
+
+The 6502 doesn't have an unconditional short jump. However, if you can find
+a condition that is always true, this can serve as an unconditional short
+jump, which saves space and time.
+
+\section{Stretchy branches}
+
+6502 branches have a limit to how far they can jump. If they really need to
+jump farther than that, you have to put a [[JMP]] or an unconditional branch
+within reach.
+
+\section{Shared code}
+
+To save space, sometimes code at the end of one function is also useful to
+the next function, as long as it is within reach. This can save space, at
+the expense of functions being completely independent.
+
+\section{Macros}
+
+The original Infocom source code uses macros for moving data around, and we will
+adopt these macros (with different names) to make our assembly language listings
+a little less verbose. We'll also make them all 4 characters long to differentiate
+them from 6502 mnemonics.
+
+[[STOW]] stores a 16-bit literal value to a memory location in little-endian order. This is the same as
+[[MOVEI]] in the original Infocom source code.
+
+<<Macros>>=
+    MACRO STOW
+        LDA      #<{1}
+        STA      {2}
+        LDA      #>{1}
+        STA      {2}+1
+    ENDM
+@ %def STOW
+
+[[MOVB]] moves a byte from one memory location to another, while [[STOB]] stores a literal byte to a memory location.
+The implementation is identical, and the only difference is documentation.
+These macros are the same as [[MOVE]] in the original Infocom source code.
+
+<<Macros>>=
+    MACRO MOVB
+        LDA    {1}
+        STA    {2}
+    ENDM
+    MACRO STOB
+        LDA    {1}
+        STA    {2}
+    ENDM
+@ %def MOVB STOB
+
+
+[[MOVW]] moves a 16-bit value from one memory location to the another. This is
+the same as [[MOVEW]] in the original Infocom source code.
+
+<<Macros>>=
+    MACRO MOVW
+        LDA    {1}
+        STA    {2}
+        LDA    {1}+1
+        STA    {2}+1
+    ENDM
+@ %def MOVW
+
+[[PSHW]] is a macro that pushes a 16-bit value in memory to the stack. This is the same as
+[[PUSHW]] in the original Infocom source code.
+
+<<Macros>>=
+    MACRO PSHW
+        LDA    {1}
+        PHA
+        LDA    {1}+1
+        PHA
+    ENDM
+@ %def PSHW
+
+[[PULB]] is a macro that pulls an 8-bit value from the stack to memory.
+
+<<Macros>>=
+    MACRO PULB
+        PLA
+        STA    {1}
+    ENDM
+@ %def PULB
+
+[[PULW]] is a macro that pulls a 16-bit value from the stack to memory. This is the same as
+[[PULLW]] in the original Infocom source code.
+
+<<Macros>>=
+    MACRO PULW
+        PLA
+        STA    {1}+1
+        PLA
+        STA    {1}
+    ENDM
+@ %def PULW
+
+[[INCW]] is a macro that increments a 16-bit value in memory. This is the same as
+[[INCW]] in the original Infocom source code.
+
+<<Macros>>=
+    MACRO INCW
+        INC    {1}
+        BNE    .continue
+        INC    {1}+1
+.continue
+    ENDM
+@ %def INCW
+
+[[ADDA]] is a macro that adds the [[A]] register to a 16-bit memory location.
+
+<<Macros>>=
+    MACRO ADDA
+        CLC
+        ADDAC  {1}
+    ENDM
+@ %def ADDA
+
+[[ADDAC]] is a macro that adds the [[A]] register and the carry flag
+to a 16-bit memory location.
+
+<<Macros>>=
+    MACRO ADDAC
+        ADC    {1}
+        STA    {1}
+        BCC    .continue
+        INC    {1}+1
+.continue
+    ENDM
+@ %def ADDAC
+
+[[ADDB]] is a macro that adds an 8-bit immediate value, or the 8-bit contents of memory, to a 16-bit memory location. This is the same as
+[[ADDB]] in the original Infocom source code. The immediate value is the second argument.
+
+<<Macros>>=
+    MACRO ADDB
+        LDA    {1}
+        CLC
+        ADC    {2}
+        STA    {1}
+        BCC    .continue
+        INC    {1}+1
+.continue
+    ENDM
+@ %def ADDB
+
+[[ADDB2]] is the same as [[ADDB]] except that it swaps
+the initial [[CLC]] and [[LDA]] instructions.
+
+<<Macros>>=
+    MACRO ADDB2
+        CLC
+        LDA    {1}
+        ADC    {2}
+        STA    {1}
+        BCC    .continue
+        INC    {1}+1
+.continue
+    ENDM
+@ %def ADDB2
+
+[[ADDW]] is a macro that adds two 16-bit values in memory and stores
+it to a third 16-bit memory location.
+
+<<Macros>>=
+    MACRO ADDW
+        CLC
+        ADDWC  {1}, {2}, {3}
+    ENDM
+@ %def ADDW
+
+[[ADDWC]] is a macro that adds two 16-bit values in memory, plus
+the carry bit, and stores it to a third 16-bit memory location.
+
+<<Macros>>=
+    MACRO ADDWC
+        LDA    {1}
+        ADC    {2}
+        STA    {3}
+        LDA    {1}+1
+        ADC    {2}+1
+        STA    {3}+1
+    ENDM
+@ %def ADDWC
+
+[[SUBB]] is a macro that subtracts an 8-bit value from a 16-bit memory location. This is the same as
+[[SUBB]] in the original Infocom source code. The immediate value is the second argument.
+
+<<Macros>>=
+    MACRO SUBB
+        LDA    {1}
+        SEC
+        SBC    {2}
+        STA    {1}
+        BCS    .continue
+        DEC    {1}+1
+.continue
+    ENDM
+@ %def SUBB
+
+[[SUBB2]] is the same as [[SUBB]] except that it swaps the initial [[SEC]] and [[LDA]] instructions.
+
+<<Macros>>=
+    MACRO SUBB2
+        SEC
+        LDA    {1}
+        SBC    {2}
+        STA    {1}
+        BCS    .continue
+        DEC    {1}+1
+.continue
+    ENDM
+@ %def SUBB2
+
+[[SUBW]] is a macro that subtracts the 16-bit memory value in the second argument from a 16-bit memory location in the first argument,
+and stores it in the 16-bit memory location in the third argument.
+
+<<Macros>>=
+    MACRO SUBW
+        SEC
+        LDA    {1}
+        SBC    {2}
+        STA    {3}
+        LDA    {1}+1
+        SBC    {2}+1
+        STA    {3}+1
+    ENDM
+@ %def SUBW
+
+[[ROLW]] rotates a 16-bit memory location left.
+
+<<Macros>>=
+    MACRO ROLW
+        ROL    {1}
+        ROL    {1}+1
+    ENDM
+@ %def ROLW
+
+[[RORW]] rotates a 16-bit memory location right.
+
+<<Macros>>=
+    MACRO RORW
+        ROR    {1}+1
+        ROR    {1}
+    ENDM
+@ %def RORW
+
+\chapter{The boot process}
+
+\textbf{Suggested reading:} \textit{Beneath Apple DOS}
+(Don Worth, Pieter Lechner, 1982) page 5-6,
+\href{https://archive.org/details/beneath-apple-dos/page/n57/mode/2up}{``What happens during booting''}.
+
+We will only examine the boot process in order to get to the main program. The
+boot process may just be the way the 4am disk image works, so should not be
+taken as original to Zork.
+
+We will be doing a deep dive into [[BOOT1]], since it is fairly easy to
+understand.
+
+Apple II programs originally came on disk, and such disks are generally bootable. You'd
+put the disk in Drive 1, reset the computer, and the disk card ROM then
+loads the [[BOOT1]] section of the disk. This section starts from track 0 sector
+0, and is almost always 1 sector (256 bytes) long. The data is stored
+to location [[$0800]] and then the disk card ROM causes the CPU to jump to
+location [[$0801]]. The very first byte in track 0 sector 0 is the number of
+sectors in this [[BOOT1]] section, and again, this is almost always [[1]].
+
+After the disk card reads [[BOOT1]], the zero-page location [[IWMDATAPTR]] is
+left as the pointer to the buffer to next read data into, so [[$0900]]. The
+location [[IWMSLTNDX]] is the disk card's slot index (slot times 16).
+
+
+\section{BOOT1}
+
+[[BOOT1]] reads a number of sectors from track 0, backwards from a starting
+sector, down to sector 0. The sector to read is stored in [[BOOT1_SECTOR_NUM]], and
+is initially [[9]] for Zork I release 15. The RAM address to read the sectors
+to is stored in [[BOOT1_WRITE_ADDR]], and it is [[$2200]]. Thus, [[BOOT1]] will
+read sectors 0 through 9 into address [[$2200 - $2BFF]].
+
+<<BOOT1>>=
+    BYTE    #$01  ; Number of sectors in BOOT1. Almost always 1.
+BOOT1:
+    SUBROUTINE
+
+<<Read BOOT2 from disk>>
+<<Jump to BOOT2>>
+<<BOOT1 parameters>>
+@ %def BOOT1
+
+<<BOOT1 parameters>>=
+    ORG     $08FD
+
+BOOT1_WRITE_ADDR:
+    HEX     00 22
+BOOT1_SECTOR_NUM:
+    HEX     09
+@ %def BOOT1_WRITE_ADDR BOOT1_SECTOR_NUM
+
+Reading [[BOOT2]] involves repeatedly calling the disk card ROM's sector read
+routine with appropriate parameters. But first, we have to initialize some
+variables.
+
+<<Read BOOT2 from disk>>=
+<<Skip initialization if BOOT1 already initialized>>
+.init_vars:
+<<Initialize BOOT1>>
+
+.already_initted:
+<<Set up parameters for reading a sector>>
+    JMP     (RDSECT_PTR)
+@
+
+The reason we have to check whether [[BOOT1]] has already been initialized is
+that the disk card ROM's [[RDSECT]] routine jumps back to [[BOOT1]] after
+reading a sector.
+
+Checking for initialization is as simple as checking the [[IWMDATAPTR]] page
+against [[09]]. If it's [[09]] then we have just finished reading [[BOOT1]], and
+this is the first call to [[BOOT1]], so we need to initialize. Otherwise, we
+can skip initialization.
+
+<<Skip initialization if BOOT1 already initialized>>=
+    LDA     IWMDATAPTR+1
+    CMP     #$09
+    BNE     .already_initted
+@
+
+To initialize the [[BOOT1]] variables, we first determine the disk card ROM's
+RDSECT routine address. This is simply [[$CX5C]], where X is the disk card's
+slot number.
+
+<<Initialize BOOT1>>=
+    LDA     IWMSLTNDX
+    LSR
+    LSR
+    LSR
+    LSR
+    ORA     #$C0
+    STA     RDSECT_PTR+1
+    LDA     #$5C
+    STA     RDSECT_PTR
+@
+
+Next, we initialize the address to read disk data into. Since we're reading
+backwards, we start by adding [[BOOT1_SECTOR_NUM]] to the page number in
+[[BOOT1_WRITE_ADDR]].
+
+<<Initialize BOOT1>>=
+    CLC
+    LDA     BOOT1_WRITE_ADDR+1
+    ADC     BOOT1_SECTOR_NUM
+    STA     BOOT1_WRITE_ADDR+1
+@
+
+Now that [[BOOT1]] has been initialized, we can set up the parameters
+for the next read. This means loading up [[IWMSECTOR]] with the sector in track
+0 to read, [[IWMDATAPTR]] with the address to read data into, and loading the X
+register with the slot index (slot times 16).
+
+First we check whether we've read all sectors by checking whether
+[[BOOT1_SECTOR_NUM]] is less than zero - recall that we are reading sectors
+from last down to 0.
+
+<<Set up parameters for reading a sector>>=
+    LDX     BOOT1_SECTOR_NUM
+    BMI     .go_to_boot2      ; Are we done?
+@
+
+We set up [[IWMSECTOR]] by taking the sector number and translating it
+to a physical sector on the disk using a translation table. This has to do with
+the way sectors on disk are interleaved for efficiency.
+
+<<BOOT1 sector translation table>>=
+    ORG     $084D
+
+BOOT1_SECTOR_TRANSLATE_TABLE:
+    HEX     00 0D 0B 09 07 05 03 01
+    HEX     0E 0C 0A 08 06 04 02 0F
+@ %def BOOT1_SECTOR_TRANSLATE_TABLE
+
+<<Set up parameters for reading a sector>>=
+    LDA     BOOT1_SECTOR_TRANSLATE_TABLE,X
+    STA     IWMSECTOR
+@
+
+<<BOOT1>>=
+<<BOOT1 sector translation table>>
+@
+
+Then we transfer [[BOOT1_WRITE_ADDR]] into [[IWMDATAPTR]], decrement
+[[BOOT1_SECTOR_NUM]], and load up the X register with [[IWMSLTNDX]].
+
+<<Set up parameters for reading a sector>>=
+    DEC     BOOT1_SECTOR_NUM
+    LDA     BOOT1_WRITE_ADDR+1
+    STA     IWMDATAPTR+1
+    DEC     BOOT1_WRITE_ADDR+1
+    LDX     IWMSLTNDX
+@
+
+Once [[BOOT1]] has finished loading, it jumps to the second page it loaded,
+which is from sector 1. This is called [[BOOT2]].
+
+<<Read BOOT2 from disk>>=
+.go_to_boot2
+    INC     BOOT1_WRITE_ADDR+1
+    INC     BOOT1_WRITE_ADDR+1
+
+    ; Set keyboard and screen as I/O, set all soft switches to defaults,
+    ; e.g. text mode, lores graphics, etc.
+
+    JSR     SETKBD
+    JSR     SETVID
+    JSR     INIT
+
+    ; Go to BOOT2!
+
+    LDX     IWMSLTNDX
+    JMP     (BOOT1_WRITE_ADDR)
+@
+
+<<BOOT1>>=
+    ; Initially, IWMDATAPTR is left with 0900 by the disk card. We initialize
+    ; some of our vars only once, so we check IWMDATAPTR+1 to see if it's
+    ; 09. If it is, we haven't yet initialized.
+
+    LDA     IWMDATAPTR+1
+    CMP     #$09
+    BNE     .already_initted
+
+.init_vars:
+    ; Set the RDSECT_PTR to $CX5C, where X is the slot number
+    ; of the disk card.
+
+    LDA     IWMSLTNDX
+    LSR
+    LSR
+    LSR
+    LSR
+    ORA     #$C0
+    STA     RDSECT_PTR+1
+    LDA     #$5C
+    STA     RDSECT_PTR
+
+    ; Add BOOT1_SECTOR_NUM to the BOOT1_WRITE_ADDR page, since we will read
+    ; backwards from BOOT1_SECTOR_NUM.
+
+    CLC
+    LDA     BOOT1_WRITE_ADDR+1
+    ADC     BOOT1_SECTOR_NUM
+    STA     BOOT1_WRITE_ADDR+1
+
+.already_initted:
+    LDX     BOOT1_SECTOR_NUM
+    BMI     .go_to_boot2      ; Are we done?
+
+    ; Translate logical sector to physical sector. This has to do with the way
+    ; sectors on disk are interleaved for efficiency.
+
+    LDA     BOOT1_SECTOR_TRANSLATE_TABLE,X
+    STA     IWMSECTOR
+    DEC     BOOT1_SECTOR_NUM
+    LDA     BOOT1_WRITE_ADDR+1
+    STA     IWMDATAPTR+1
+    DEC     BOOT1_WRITE_ADDR+1
+    LDX     IWMSLTNDX
+
+    ; The disk card's read sector function jumps back to BOOT1 after reading the
+    ; sector. The sector to read is in IWMSECTOR, and the page to write
+    ; the data to is in IWMDATAPTR+1. The X register contains the disk slot
+    ; times 16.
+
+    JMP     (RDSECT_PTR)
+
+.go_to_boot2
+    ; BOOT2 starts with sector 1, not sector 0, so increment the page from
+    ; BOOT1_WRITE_ADDR by 2.
+
+    INC     BOOT1_WRITE_ADDR+1
+    INC     BOOT1_WRITE_ADDR+1
+
+    ; Set keyboard and screen as I/O, set all soft switches to defaults,
+    ; e.g. text mode, lores graphics, etc.
+
+    JSR     SETKBD
+    JSR     SETVID
+    JSR     INIT
+
+    ; Go to BOOT2!
+
+    LDX     IWMSLTNDX
+    JMP     (BOOT1_WRITE_ADDR)
+
+    ORG     $084D
+BOOT1_SECTOR_TRANSLATE_TABLE:
+    HEX     00 0D 0B 09 07 05 03 01
+    HEX     0E 0C 0A 08 06 04 02 0F
+
+@
+
+<<Jump to BOOT2>>=
+@
+
+\section{BOOT2}
+
+[[BOOT2]] loads 26 sectors starting from track 1 sector 0 into addresses
+[[$0800-$21FF]], and then jumps to [[$0800]]. Normally, [[BOOT2]] loads DOS
+and jumps to it, but in this case we don't need DOS and go directly to the
+main program.
+
+\chapter{The main program}
+
+This is the Z-machine proper.
+
+We first clear out the top half of zero page ([[$80-$FF]]).
+
+<<main>>=
+main:
+    SUBROUTINE
+
+    CLD
+    LDA      #$00
+    LDX      #$80
+
+.clear:
+    STA      $80,X
+    INX
+    BNE      .clear
+@ %def main
+
+And we reset the 6502 stack pointer.
+
+<<main>>=
+    LDX      #$FF
+    TXS
+@
+
+Next, we set up some variables. The printer output routine, [[PRINTER_CSW]],
+is set to [[$C100]]. This is the address of the ROM of the card in slot 1,
+which is typically the printer card. It will be used later when outputting
+text to both screen and printer.
+
+Next, we set [[ZCODE_PAGE_VALID]] to zero, which will later cause the Z-machine
+to load the first page of Z-code into memory when the first instruction is
+retrieved.
+
+The z-stack count, [[STACK_COUNT]], is set to 1, and the z-stack pointer,
+[[Z_SP]], is set to [[$03E8]].
+
+There are two page tables, [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]], which
+are set to [[$2200]] and [[$2280]], respectively. These are used to map
+Z-machine memory pages to physical memory pages.
+
+There are two other page tables, [[NEXT_PAGE_TABLE]] and [[PREV_PAGE_TABLE]],
+which are set to [[$2300]] and [[$2380]], respectively. Together this forms a doubly-linked list of pages.
+
+<<main>>=
+.set_vars:
+    ; Historical note: Setting PRINTER_CSW was originally a call to SINIT,
+    ; "system-dependent initialization".
+    LDA      #$C1
+    STA      PRINTER_CSW+1
+    LDA      #$00
+    STA      PRINTER_CSW
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID
+    STA      ZCODE_PAGE_VALID2
+    STOB     #$01, STACK_COUNT
+    STOW     #$03E8, Z_SP
+    STOB     #$FF, DAT_00d9  ; ZSTBUI+6
+    STOW     #$2200, PAGE_L_TABLE
+    STOW     #$2280, PAGE_H_TABLE
+    STOW     #$2300, NEXT_PAGE_TABLE
+    STOW     #$2380, PREV_PAGE_TABLE
+@
+
+Next, we initialize the page tables. This zeros out [[PAGE_L_TABLE]] and
+[[PAGE_H_TABLE]], and then sets up the next and previous page tables.
+[[NEXT_PAGE_TABLE]] is initialized to [[01 02 03 ... 7F FF]] and so on, while
+[[PREV_PAGE_TABLE]] is initialized to [[FF 00 01 ... 7D 7E]]. [[FF]], in fact,
+is the null pointer for this linked list.
+
+<<main>>=
+    LDY      #$00
+    LDX      #$80       ; Max pages
+
+.loop_inc_dec_tables:
+    LDA      #$00
+    STA      (PAGE_L_TABLE),Y
+    STA      (PAGE_H_TABLE),Y
+    TYA
+    CLC
+    ADC      #$01
+    STA      (NEXT_PAGE_TABLE),Y
+    TYA
+    SEC
+    SBC      #$01
+    STA      (PREV_PAGE_TABLE),Y
+    INY
+    DEX
+    BNE      .loop_inc_dec_tables
+    DEY
+    LDA      #$FF
+    STA      (NEXT_PAGE_TABLE),Y
+@
+
+Next, we set [[FIRST_Z_PAGE]] to 0 (the head of the list), [[LAST_Z_PAGE]] to [[#$7F]] (the tail of the list), and [[Z_HEADER_ADDR]] to [[$2C00]].
+[[Z_HEADER_ADDR]] is the address in memory where the Z-code image header is stored.
+
+<<main>>=
+    STOB     #$00, FIRST_Z_PAGE
+    STOB     #$7F, LAST_Z_PAGE
+    STOW     #$2C00, Z_HEADER_ADDR
+@
+
+Then we clear the screen.
+
+<<main>>=
+    JSR      do_reset_window
+@
+
+<<Do reset window>>=
+do_reset_window:
+    JSR      reset_window
+    RTS
+@ %def do_reset_window
+
+Next, we start reading the image of Z-code from disk into memory. The first page
+of the image, which is the image header, gets loaded into the address stored in [[Z_HEADER_ADDR]].
+This done through the [[read_from_sector]] routine, which reads the (256 byte) sector stored in
+[[SCRATCH1]], relative to track 3 sector 0, into the address stored in [[SCRATCH2]].
+
+If there was an error reading, we jump back to the beginning of the main program and
+start again. This would result in a failure loop with no apparent output if the
+disk is damaged.
+
+<<main>>=
+.read_z_image:
+    MOVW     Z_HEADER_ADDR, SCRATCH2
+    STOW     #$0000, SCRATCH1
+    JSR      read_from_sector
+
+    ; Historical note: The original Infocom source code did not check
+    ; for an error here.
+
+    BCC      .no_error
+    JMP      main
+@
+
+If there was no error reading the image header, we write [[#$FF]] into byte 5 of the header,
+whose purpose is not known at this point. Then we load byte 4 of the header, which is the page
+for the ``base of high memory'', and store it (plus 1) in [[NUM_IMAGE_PAGES]].
+
+Then, we read [[NUM_IMAGE_PAGES-1]] consecutive sectors after the header
+into consecutive memory.
+
+Suppose [[Z_HEADER_ADDRESS]] is [[$2C00]]. We have already read the header sector in. Now
+suppose the base of high memory in the header is [[#$01F6]].
+Then [[NUM_IMAGE_PAGES]] would be [[#$02]], and we would read one sector into memory at [[$2D00]].
+
+In the case of Zork I, [[Z_HEADER_ADDRESS]] is [[$2C00]], and the base of high memory is [[#$47FF]].
+[[NUM_IMAGE_PAGES]] is thus [[#$48]]. So, we would read 71 more sectors into memory,
+from [[$2D00]] to [[$73FF]].
+
+<<main>>=
+.no_error:
+    LDY      #$05
+    LDA      #$FF
+    STA      (Z_HEADER_ADDR),Y
+    DEY
+    LDA      (Z_HEADER_ADDR),Y
+    STA      NUM_IMAGE_PAGES
+    INC      NUM_IMAGE_PAGES
+    LDA      #$00
+
+.read_another_sector:
+    CLC                         ; "START2"
+    ADC      #$01
+    TAX
+    ADC      Z_HEADER_ADDR+1
+    STA      SCRATCH2+1
+    LDA      Z_HEADER_ADDR
+    STA      SCRATCH2
+    TXA
+    CMP      NUM_IMAGE_PAGES
+    BEQ      .check_bit_0_flag    ; done loading
+    PHA
+    STA      SCRATCH1
+    LDA      #$00
+    STA      SCRATCH1+1
+    JSR      read_from_sector
+
+    ; Historical note: The original Infocom source code did not check
+    ; for an error here.
+
+    BCC      .no_error2
+    JMP      main
+
+.no_error2:
+    PLA
+    JMP      .read_another_sector
+@
+
+Next, we check the debug-on-start flag stored in bit 0 of byte 1 of the header,
+and if it isn't clear, we execute a BRK instruction. That drops the Apple II into
+its monitor, which allows debugging, however primitive by our modern standards.
+
+This part was not in the original Infocom source code.
+
+<<main>>=
+.check_bit_0_flag:
+    LDY      #$01
+    LDA      (Z_HEADER_ADDR),Y
+    AND      #$01
+    EOR      #$01
+    BEQ      .brk
+@
+
+<<die>>=
+.brk:
+    JSR      brk
+@
+
+<<brk>>=
+brk:
+    BRK
+@ %def brk
+
+Continuing after the load, we set the 24-bit [[Z_PC]] program counter to its
+initial 16-bit value, which is stored in the header at bytes 6 and 7, bigendian.
+For Zork I, [[Z_PC]] becomes [[#$004859]].
+
+<<main>>=
+.store_initial_z_pc:
+    LDY      #$07
+    LDA      (Z_HEADER_ADDR),Y
+    STA      Z_PC
+    DEY
+    LDA      (Z_HEADER_ADDR),Y
+    STA      Z_PC+1
+    LDA      #$00
+    STA      Z_PC+2
+@
+
+Next, we load [[GLOBAL_ZVARS_ADDR]] and [[Z_ABBREV_TABLE]] from the header
+at bytes [[#$0C-$0D]] and [[#$18-$19]], respectively. Again, these are bigendian
+values, so get byte-swapped. These are relative to the beginning of the image,
+so we simply add the page of the image address to them. There is no need to add the low
+byte of the header address, since the header already begins on a page boundary.
+
+For Zork I, the header values are [[#$20DE]] and [[#$00CA]], respectively. This means
+that [[GLOBAL_ZVARS_ADDR]] is [[$4CDE]] and [[Z_ABBREV_TABLE]] is [[$2CCA]].
+
+<<main>>=
+.store_z_global_vars_addr:
+    LDY      #$0D
+    LDA      (Z_HEADER_ADDR),Y
+    STA      GLOBAL_ZVARS_ADDR
+    DEY
+    LDA      (Z_HEADER_ADDR),Y
+    CLC
+    ADC      Z_HEADER_ADDR+1
+    STA      GLOBAL_ZVARS_ADDR+1
+
+.store_z_abbrev_table_addr:
+    LDY      #$19
+    LDA      (Z_HEADER_ADDR),Y
+    STA      Z_ABBREV_TABLE
+    DEY
+    LDA      (Z_HEADER_ADDR),Y
+    CLC
+    ADC      Z_HEADER_ADDR+1
+    STA      Z_ABBREV_TABLE+1
+@
+
+Next, we set [[AFTER_Z_IMAGE_ADDR]] to the page-aligned memory address immediately after the image,
+and compare its page to the last viable RAM page. If it is greater, we hit a BRK instruction since there
+isn't enough memory to run the game.
+
+For Zork I, [[AFTER_Z_IMAGE_ADDR]] is [[$7400]].
+
+For a fully-populated Apple II (64k RAM), the last viable RAM page is [[#$BF]].
+
+<<main>>=
+    LDA      #$00
+    STA      AFTER_Z_IMAGE_ADDR
+    LDA      NUM_IMAGE_PAGES
+    CLC
+    ADC      Z_HEADER_ADDR+1
+    STA      AFTER_Z_IMAGE_ADDR+1
+    JSR      locate_last_ram_page
+    SEC
+    SBC      AFTER_Z_IMAGE_ADDR+1
+    BCC      .brk
+@
+
+We then store the difference as the last Z-image page in [[LAST_Z_PAGE]], and the same, plus 1,
+in [[NUM_PAGE_TABLE_ENTRIES]]. We also set the next page table entry of the last page to [[#$FF]].
+
+For Zork I, [[NUM_PAGE_TABLE_ENTRIES]] is [[#$4C]], and [[LAST_Z_PAGE]] is [[#$4B]].
+
+And lastly, we start the interpreter loop by executing the first instruction in z-code.
+
+<<main>>=
+    TAY
+    INY
+    STY      NUM_PAGE_TABLE_ENTRIES
+    TAY
+    STY      LAST_Z_PAGE
+    LDA      #$FF
+    STA      (NEXT_PAGE_TABLE),Y
+    JMP      do_instruction
+@
+
+To locate the last viable RAM page, we start with [[$C0FF]] in [[SCRATCH2]].
+
+We then decrement the high byte of [[SCRATCH2]], and read from the address twice.
+If it reads differently, we are not yet into viable RAM, so we decrement and try again.
+
+Otherwise, we invert the byte, write it back, and read it back. Again, if it
+reads differently, we decrement and try again.
+
+Finally, we return the high byte of [[SCRATCH2]].
+
+<<Locate last RAM page>>=
+locate_last_ram_page:
+    SUBROUTINE
+
+    MOV      $#C0, SCRATCH2+1
+    MOV      #$FF, SCRATCH2
+    LDY      #$00
+
+.loop:
+    DEC      SCRATCH2+1
+    LDA      (SCRATCH2),Y
+    CMP      (SCRATCH2),Y
+    BNE      .loop
+    EOR      #$FF
+    STA      (SCRATCH2),Y
+    CMP      (SCRATCH2),Y
+    BNE      .loop
+    EOR      #$FF
+    STA      (SCRATCH2),Y
+    LDA      SCRATCH2+1
+    RTS
+@ %def locate_last_ram_addr
+
+\chapter{The Z-stack}
+
+The Z-stack is a stack of 16-bit values used by the Z-machine. It is not the same as the
+6502 stack. The stack can hold values, but also holds call frames (see \nameref{sec:call}). The stack grows downwards in memory.
+
+The stack pointer is [[Z_SP]], and it points to the current top of the stack. The
+counter [[STACK_COUNT]] contains the current number of 16-bit elements on the stack.
+
+As mentioned above, [[STACK_COUNT]], is initialized to 1 and [[Z_SP]], is initialized to [[$03E8]].
+
+Pushing a 16-bit value onto the stack involves placing the value at the next two
+free locations, low byte first, and then decrementing the stack pointer by 2. So for example, if pushing the value [[#$1234]] onto the stack, and [[Z_SP]] is [[$03E8]], then [[$03E7]] will contain [[#$34]], [[$03E6]] will contain [[#$12]], and [[Z_SP]] will end up as [[$03E6]]. [[STACK_COUNT]] will also be incremented.
+
+The [[push]] routine pushes the 16-byte value in [[SCRATCH2]] onto the stack.
+According to the code, if the number of elements becomes [[#$B4]] (180), the program will hit a BRK instruction.
+
+<<Push>>=
+push:
+    SUBROUTINE
+
+    SUBB     Z_SP, #$01
+    LDY      #$00
+    LDA      SCRATCH2
+    STA      (Z_SP),Y
+    SUBB     Z_SP, #$01
+    LDA      SCRATCH2+1
+    STA      (Z_SP),Y
+    INC      STACK_COUNT
+    LDA      STACK_COUNT
+    CMP      #$B4
+    BCC      .end
+    JSR      brk
+
+.end:
+    RTS
+@ %def push
+
+The [[pop]] routine pops a 16-bit value from the stack into [[SCRATCH2]], which
+increments [[Z_SP]] by 2, then decrements [[STACK_COUNT]]. If [[STACK_COUNT]] ends
+up as zero, the stack underflows and the program will hit a BRK instruction.
+
+<<Pop>>=
+pop:
+    SUBROUTINE
+
+    LDY      #$00
+    LDA      (Z_SP),Y
+    STA      SCRATCH2+1
+    INCW     Z_SP
+    LDA      (Z_SP),Y
+    STA      SCRATCH2
+    INCW     Z_SP
+    DEC      STACK_COUNT
+    BNE      .end
+    JSR      brk
+.end:
+    RTS
+@ %def pop
+
+\chapter{Z-code}
+
+Z-code is not stored in memory in a linear fashion. Rather, it is stored in pages of 256
+bytes, in the order that the Z-machine loads them. [[ZCODE_PAGE_ADDR]] is the
+address in memory that the current page of Z-code is stored in.
+
+The [[Z_PC]] 24-bit address is an address into z-code. So, getting the next code byte
+translates to retrieving the byte at [[(ZCODE_PAGE_ADDR) + Z_PC]] and incrementing the low
+byte of [[Z_PC]].
+
+Of course, if the low byte of [[Z_PC]] ends up as 0, we'll need to propagate the increment to
+its other bytes, but also invalidate the current code page.
+
+This is handled through the [[ZCODE_PAGE_VALID]] flag. If it is zero, then we will need to load
+a page of Z-code into [[ZCODE_PAGE_ADDR]].
+
+As an example, when the Z-machine starts, [[Z_PC]] is [[#$004859]], and [[ZCODE_PAGE_VALID]] is
+[[0]]. This means that we will have to load code page [[#$48]].
+
+<<Get next code byte>>=
+get_next_code_byte:
+    LDA      ZCODE_PAGE_VALID
+    BEQ      .zcode_page_invalid
+    LDY      Z_PC
+    LDA      (ZCODE_PAGE_ADDR),Y
+    INY
+    STY      Z_PC
+    BEQ      .invalidate_zcode_page
+    RTS
+
+.invalidate_zcode_page:
+    LDY      #$00
+    STY      ZCODE_PAGE_VALID
+    INC      Z_PC+1
+    BNE      .end
+    INC      Z_PC+2
+
+.end:
+    RTS
+@ %def get_next_code_byte
+
+As an example, on start, [[Z_PC]] is [[#$004859]], so we have to access code page [[#$0048]].
+Since the high byte isn't set, we know that the code page is in memory. If the high byte
+were set, we would have to locate that page in memory, and if it isn't there, we would have
+to load it from disk.
+
+But let's suppose that [[Z_PC]] were [[#$014859]]. We would have to access code page [[#$0148]].
+Initially, [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]] are zeroed out, so [[find_index_of_page_table]]
+would return with carry set and the [[A]] register set to [[LAST_Z_PAGE]] ([[#$4B]]).
+
+<<Get next code byte>>=
+.zcode_page_invalid:
+    LDA      Z_PC+2
+    BNE      .find_pc_page_in_page_table
+    LDA      Z_PC+1
+    CMP      NUM_IMAGE_PAGES
+    BCC      .set_page_addr
+
+.find_pc_page_in_page_table:
+    LDA      Z_PC+1
+    STA      SCRATCH2
+    LDA      Z_PC+2
+    STA      SCRATCH2+1
+    JSR      find_index_of_page_table
+    STA      PAGE_TABLE_INDEX
+    BCS      .not_found_in_page_table
+
+.adjust_page_link_tables:
+    JSR      adjust_page_link_tables
+    CLC
+    LDA      PAGE_TABLE_INDEX
+    ADC      NUM_IMAGE_PAGES
+
+<<Set page address>>
+@
+
+If the page we need isn't found in the page table, we need to load it from disk, and it gets
+loaded into [[AFTER_Z_IMAGE_ADDR]] plus [[PAGE_TABLE_INDEX]] pages. On a good read, we store
+the z-page value into the page table.
+
+<<Not found in page table>>=
+.not_found_in_page_table:
+    CMP      DAT_0097
+    BNE      .read_from_disk
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID2
+
+.read_from_disk:
+    LDA      AFTER_Z_IMAGE_ADDR
+    STA      SCRATCH2
+    LDA      AFTER_Z_IMAGE_ADDR+1
+    STA      SCRATCH2+1
+    LDA      PAGE_TABLE_INDEX
+    CLC
+    ADC      SCRATCH2+1
+    STA      SCRATCH2+1
+    LDA      Z_PC+1
+    STA      SCRATCH1
+    LDA      Z_PC+2
+    STA      SCRATCH1+1
+    JSR      read_from_sector
+    BCC      .good_read
+    JMP      main
+
+.good_read:
+    LDY      PAGE_TABLE_INDEX
+    LDA      Z_PC+1
+    STA      (PAGE_L_TABLE),Y
+    LDA      Z_PC+2
+    STA      (PAGE_H_TABLE),Y
+    TYA
+    JMP      .adjust_page_link_tables
+@
+
+Once we've ensured that the desired Z-code page is in memory, we can add the
+page to the page of [[Z_HEADER_ADDR]] and store in [[ZCODE_PAGE_ADDR]]. We also
+set the low byte of [[ZCODE_PAGE_ADDR]] to zero since we're guaranteed to be at
+the top of the page. We also set [[ZCODE_PAGE_VALID]] to true. And finally we
+go back to the beginning of the routine to get the next code byte.
+
+<<Set page address>>=
+.set_page_addr:
+    CLC
+    ADC      Z_HEADER_ADDR+1
+    STA      ZCODE_PAGE_ADDR+1
+    LDA      #$00
+    STA      ZCODE_PAGE_ADDR
+    LDA      #$FF
+    STA      ZCODE_PAGE_VALID
+    JMP      get_next_code_byte
+@
+
+Adjusting the page link tables from [[A]]. If it's already the [[FIRST_Z_PAGE]],
+we're done.
+
+<<Adjust page link tables>>=
+adjust_page_link_tables:
+    SUBROUTINE
+
+    CMP      FIRST_Z_PAGE
+    BEQ      .end
+    LDX      FIRST_Z_PAGE           ; prev_first = FIRST_Z_PAGE
+    STA      FIRST_Z_PAGE           ; FIRST_Z_PAGE = A
+
+    TAY                             ; SCRATCH2L = NEXT_PAGE_TABLE[FIRST_Z_PAGE]
+    LDA      (NEXT_PAGE_TABLE),Y
+    STA      SCRATCH2
+    TXA                             ; NEXT_PAGE_TABLE[FIRST_Z_PAGE] = prev_first
+    STA      (NEXT_PAGE_TABLE),Y
+
+    LDA      (PREV_PAGE_TABLE),Y    ; SCRATCH2H = PREV_PAGE_TABLE[FIRST_Z_PAGE]
+    STA      SCRATCH2+1
+    LDA      #$FF                   ; PREV_PAGE_TABLE[FIRST_Z_PAGE] = #$FF
+    STA      (PREV_PAGE_TABLE),Y
+    LDY      SCRATCH2+1
+    LDA      SCRATCH2
+    STA      (NEXT_PAGE_TABLE),Y    ; NEXT_PAGE_TABLE[SCRATCH2H] = SCRATCH2L
+    TXA
+    TAY
+    LDA      FIRST_Z_PAGE
+    STA      (PREV_PAGE_TABLE),Y    ; PREV_PAGE_TABLE[prev_first] = FIRST_Z_PAGE
+    LDA      SCRATCH2
+    CMP      #$FF
+    BEQ      set_last_z_page
+    TAY
+    LDA      SCRATCH2+1
+    STA      (PREV_PAGE_TABLE),Y    ; PREV_PAGE_TABLE[SCRATCH2L] = SCRATCH2H
+
+.end:
+    RTS
+
+.set_last_z_page:
+    LDA      SCRATCH2+1             ; LAST_Z_PAGE = SCRATCH2H
+    STA      LAST_Z_PAGE
+    RTS
+@ %def adjust_page_link_tables
+
+The [[get_next_code_byte2]] routine is identical to [[get_next_code_byte]], except
+that it uses a second set of [[Z_PC]] variables: [[Z_PC2]], [[ZCODE_PAGE_VALID2]],
+[[ZCODE_PAGE_ADDR2]], and [[PAGE_TABLE_INDEX2]].
+
+Note that the three bytes of [[Z_PC2]] are not stored in memory in the same order
+as [[Z_PC]], which is why we separate out the bytes into [[Z_PC2_HH]], [[Z_PC2_H]],
+and [[Z_PC2_L]].
+
+<<Get next code byte 2>>=
+get_next_code_byte2:
+    SUBROUTINE
+
+    LDA      ZCODE_PAGE_VALID2
+    BEQ      .zcode_page_invalid
+    LDY      Z_PC2_L
+    LDA      (ZCODE_PAGE_ADDR2),Y
+    INY
+    STY      Z_PC2_L
+    BEQ      .invalidate_zcode_page
+    RTS
+
+.invalidate_zcode_page:
+    LDY      #$00
+    STY      ZCODE_PAGE_VALID2
+    INC      Z_PC2_H
+    BNE      .end
+    INC      Z_PC2_HH
+
+.end:
+    RTS
+
+.zcode_page_invalid:
+    LDA      Z_PC2_HH
+    BNE      .find_pc_page_in_page_table
+    LDA      Z_PC2_H
+    CMP      NUM_IMAGE_PAGES
+    BCC      .set_page_addr
+
+.find_pc_page_in_page_table:
+    LDA      Z_PC2_H
+    STA      SCRATCH2
+    LDA      Z_PC2_HH
+    STA      SCRATCH2+1
+    JSR      find_index_of_page_table
+    STA      PAGE_TABLE_INDEX2
+    BCS      .not_found_in_page_table
+
+.adjust_page_link_tables:
+    JSR      adjust_page_link_tables
+    CLC
+    LDA      PAGE_TABLE_INDEX2
+    ADC      NUM_IMAGE_PAGES
+
+.set_page_addr:
+    CLC
+    ADC      Z_HEADER_ADDR+1
+    STA      ZCODE_PAGE_ADDR2+1
+    LDA      #$00
+    STA      ZCODE_PAGE_ADDR2
+    LDA      #$FF
+    STA      ZCODE_PAGE_VALID2
+    JMP      get_next_code_byte2
+
+.not_found_in_page_table:
+    CMP      PAGE_TABLE_INDEX
+    BNE      .read_from_disk
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID
+
+.read_from_disk:
+    LDA      AFTER_Z_IMAGE_ADDR
+    STA      SCRATCH2
+    LDA      AFTER_Z_IMAGE_ADDR+1
+    STA      SCRATCH2+1
+    LDA      PAGE_TABLE_INDEX2
+    CLC
+    ADC      SCRATCH2+1
+    STA      SCRATCH2+1
+    LDA      Z_PC2_H
+    STA      SCRATCH1
+    LDA      Z_PC2_HH
+    STA      SCRATCH1+1
+    JSR      read_from_sector
+    BCC      .good_read
+    JMP      main
+
+.good_read:
+    LDY      PAGE_TABLE_INDEX2
+    LDA      Z_PC2_H
+    STA      (PAGE_L_TABLE),Y
+    LDA      Z_PC2_HH
+    STA      (PAGE_H_TABLE),Y
+    TYA
+    JMP      .adjust_page_link_tables
+@ %def get_next_code_byte2
+
+That routine is used in [[get_next_code_word]], which simply gets a 16-bit bigendian
+value at [[Z_PC2]] and stores it in [[SCRATCH2]].
+
+<<Get next code word>>=
+get_next_code_word:
+    SUBROUTINE
+
+    JSR      get_next_code_byte2
+    PHA
+    JSR      get_next_code_byte2
+    STA      SCRATCH2
+    PLA
+    STA      SCRATCH2+1
+    RTS
+@ %def get_next_code_word
+
+The [[load_address]] routine copies [[SCRATCH2]] to [[Z_PC2]].
+
+<<Load address>>=
+load_address:
+    SUBROUTINE
+
+    LDA      SCRATCH2
+    STA      Z_PC2_L
+    LDA      SCRATCH2+1
+    STA      Z_PC2_H
+    LDA      #$00
+    STA      Z_PC2_HH
+@ %def load_address
+
+The [[load_packed_address]] routine multiplies [[SCRATCH2]] by 2 and stores the result in [[Z_PC2]].
+
+<<Load packed address>>=
+invalidate_zcode_page2:
+    SUBROUTINE
+
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID2
+    RTS
+
+load_packed_address:
+    SUBROUTINE
+
+    LDA      SCRATCH2
+    ASL      A
+    STA      Z_PC2_L
+    LDA      SCRATCH2+1
+    ROL      A
+    STA      Z_PC2_H
+    LDA      #$00
+    ROL      A
+    STA      Z_PC2_HH
+    JMP      invalidate_zcode_page2
+@ %def invalidate_zcode_page2 load_packed_address
+
+\chapter{I/O}
+
+\section{Strings and output}
+
+\subsection{The Apple II text screen}
+
+The [[cout_string]] routine stores a pointer to the ASCII string to print in [[SCRATCH2]],
+and the number of characters to print in the [[X]] register. It uses the
+[[COUT1]] routine to output characters to the screen.
+
+Apple II Monitors Peeled describes [[COUT1]] as writing the byte in the [[A]]
+register to the screen at cursor position [[CV, CH]], using [[INVFLG]] and
+supporting cursor movement.
+
+The difference between [[COUT]] and [[COUT1]] is that [[COUT1]] always prints to
+the screen, while [[COUT]] prints to whatever device is currently set as the
+output (e.g. a modem).
+
+See also \href{https://archive.org/details/Apple_II_Reference_Manual_1979_Apple}{Apple II Reference Manual}
+(Apple, 1979) page 61 for an explanation of these routines.
+
+The logical-or with [[#$80]] sets the high bit, which causes [[COUT1]] to output
+normal characters. Without it, the characters would be in inverse text.
+
+<<Output string to console>>=
+cout_string:
+    SUBROUTINE
+
+    LDY      #$00
+
+.loop:
+    LDA      (SCRATCH2),Y
+    ORA      #$80
+    JSR      COUT1
+    INY
+    DEX
+    BNE      .loop
+    RTS
+@ %def cout_string
+
+The [[home]] routine calls the ROM [[HOME]] routine, which clears the scroll
+window and sets the cursor to the top left corner of the window. This routine,
+however, also loads [[CURR_LINE]] with the top line of the window.
+
+<<Home>>=
+home:
+    SUBROUTINE
+
+    JSR      HOME
+    LDA      WNDTOP
+    STA      CURR_LINE
+    RTS
+@ %def home
+
+The [[reset_window]] routine tests the top left and bottom right of the screen
+scroll window to their full-screen values, sets the input prompt character to [[>]],
+resets the inverse flag to [[#$FF]] (do not invert), then calls [[home]] to reset
+the cursor.
+
+<<Reset window>>=
+reset_window:
+    SUBROUTINE
+
+    LDA      #1
+    STA      WNDTOP
+    LDA      #0
+    STA      WNDLFT
+    LDA      #40
+    STA      WNDWDTH
+    LDA      #24
+    STA      WNDBTM
+    LDA      #$3E      ; '>'
+    STA      PROMPT
+    LDA      #$FF
+    STA      INVFLG
+    JSR      home
+    RTS
+@ %def reset_window
+
+When printing to the screen, Zork breaks lines between words. To do this, we
+buffer characters into the [[KBD_INPUT_AREA]], which starting at address
+[[$0200]]. The offset into the area to put the next character into is in
+[[BUFF_END]].
+
+The [[dump_buffer_to_screen]] routine dumps the current buffer line to the
+screen, and then zeros [[BUFF_END]].
+
+<<Dump buffer to screen>>=
+dump_buffer_to_screen:
+    LDX      #$00
+
+.loop:
+    CPX      BUFF_END
+    BEQ      .done
+    LDA      KBD_INPUT_AREA,X
+    JSR      COUT1
+    INX
+    JMP      .loop
+
+.done:
+    LDX      #$00
+    STX      BUFF_END
+    RTS
+@ %def dump_buffer_to_screen
+
+Zork also has the option to send all output to the printer, and the
+[[dump_buffer_to_printer]] routine is the printer version of [[dump_buffer_to_screen]].
+
+Output to the printer involves temporarily changing [[CSW]] (initially
+[[COUT1]]) to the printer output routine at [[PRINTER_CSW]], calling
+[[COUT]] with the characters to print, then restoring [[CSW]]. Note that we
+call [[COUT]], not [[COUT1]].
+
+See \href{https://archive.org/details/Apple_II_Reference_Manual_1979_Apple}{Apple II Reference Manual}
+(Apple, 1979) page 61 for an explanation of these routines.
+
+If the printer hasn't yet been initialized, we send the command
+string [[ctrl-I80N]], which according to the Apple II Parallel Printer Interface
+Card Installation and Operation Manual, sets the printer to output 80 characters
+per line.
+
+There is one part of initialization which isn't clear. It stores [[#$91]],
+corresponding to character [[Q]], into a screen memory hole at [[$0779]]. The
+purpose of doing this is not known.
+
+See \href{https://archive.org/details/Understanding_the_Apple_IIe}{Understanding the Apple //e}
+(Sather, 1985) figure 5.5 for details on screen holes.
+
+See \href{https://archive.org/details/Apple_II_Reference_Manual_1979_Apple}{Apple II Reference Manual}
+(Apple, 1979) page 82 for a possible explanation, where [[$0779]] is part of
+SCRATCHpad RAM for slot 1, which is typically where the printer card would be
+placed. Maybe writing [[#$91]] to [[$0779]] was necessary to enable command
+mode for certain cards.
+
+<<Dump buffer to printer>>=
+printer_card_initialized_flag:
+    BYTE     00
+
+dump_buffer_to_printer:
+    LDA      CSW
+    PHA
+    LDA      CSW+1
+    PHA
+    LDA      PRINTER_CSW
+    STA      CSW
+    LDA      PRINTER_CSW+1
+    STA      CSW+1
+    LDX      #$00
+    LDA      printer_card_initialized_flag
+    BNE      .loop
+    INC      printer_card_initialized_flag
+
+.printer_set_80_column_output:
+    LDA      #$09      ; ctrl-I
+    JSR      COUT
+    LDA      #$91      ; 'Q'
+    STA      $0779     ; Scratchpad RAM for slot 1.
+    LDA      #$B8      ; '8'
+    JSR      COUT
+    LDA      #$B0      ; '0'
+    JSR      COUT
+    LDA      #$CE      l 'N'
+    JSR      COUT
+
+.loop:
+    CPX      BUFF_END
+    BEQ      .done
+    LDA      KBD_INPUT_AREA,X
+    JSR      COUT
+    INX
+    JMP      .loop
+
+.done:
+    LDA      CSW
+    STA      PRINTER_CSW
+    LDA      CSW+1
+    STA      PRINTER_CSW+1
+    PLA
+    STA      CSW+1
+    PLA
+    STA      CSW
+    RTS
+@ %def dump_buffer_to_printer printer_card_initialized_flag
+
+Tying these two routines together is [[dump_buffer_line]], which dumps the
+current buffer line to the screen, and optionally the printer, depending on the
+printer output flag stored in bit [[0]] of offset [[#$11]] in the Z-machine
+header. Presumably this bit is set (in the Z-code itself) when you type
+[[SCRIPT]] on the Zork command line, and unset when you type [[UNSCRIPT]].
+
+<<Dump buffer line>>=
+dump_buffer_line:
+    LDY      #$11
+    LDA      (Z_HEADER),Y
+    AND      #$01
+    BEQ      .skip_printer
+    JSR      dump_buffer_to_printer
+
+.skip_printer:
+    JSR      dump_buffer_to_screen
+    RTS
+@ %def dump_buffer_line
+
+The [[dump_buffer_with_more]] routine dumps the buffered line,
+but first, we check if we've reached the bottom of the screen by comparing
+[[CURR_LINE >= WNDBTM]]. If true, we print [[[MORE]]] in inverse
+text, wait for the user to hit a character, set [[CURR_LINE]] to [[WNDTOP + 1]],
+and continue.
+
+<<Dump buffer with more>>=
+string_more:
+    DC       "[MORE]"
+
+dump_buffer_with_more:
+    SUBROUTINE
+
+    INC      CURR_LINE
+    LDA      CURR_LINE
+    CMP      WNDBTM
+    BCC      .good_to_go    ; haven't reached bottom of screen yet
+
+    STOW     string_more, SCRATCH2
+    LDX      #6
+
+    LDA      #$3F
+    STA      INVFLG
+    JSR      cout_string    ; print [MORE] in inverse text
+
+    LDA      #$FF
+    STA      INVFLG
+
+    JSR      RDKEY      ; wait for keypress
+    LDA      CH
+    SEC
+    SBC      #$06
+    STA      CH             ; move cursor back 6
+    JSR      CLREOL     ; and clear the line
+    LDA      WNDTOP
+    STA      CURR_LINE
+    INC      CURR_LINE      ; start at top of screen
+
+.good_to_go:
+@ %def dump_buffer_with_more
+
+Next, we call [[dump_buffer_line]] to output the buffer to the screen. If we
+haven't yet reached the end of the line, then output a newline character to
+the screen.
+
+<<Dump buffer with more>>=
+    LDA      BUFF_END
+    PHA
+    JSR      dump_buffer_line
+    PLA
+    CMP      WNDWDTH
+    BEQ      .skip_newline
+    LDA      #$8D
+    JSR      COUT1
+
+.skip_newline:
+@
+
+Next, we check if we are also outputting to the printer. If so, we output a
+newline to the printer as well. Note that we've already output the line to the
+printer in [[dump_buffer_line]], so we only need to output a newline here.
+
+<<Dump buffer with more>>=
+    LDY      #$11
+    LDA      (Z_HEADER),Y
+    AND      #$01
+    BEQ      .reset_buffer_end
+
+    LDA      CSW
+    PHA
+    LDA      CSW+1
+    PHA
+    LDA      PRINTER_CSW
+    STA      CSW
+    LDA      PRINTER_CSW+1
+    STA      CSW+1
+
+    LDA      #$8D
+    JSR      COUT
+
+    LDA      CSW
+    STA      PRINTER_CSW
+    LDA      CSW+1
+    STA      PRINTER_CSW+1
+    PLA
+    STA      CSW+1
+    PLA
+    STA      CSW
+
+.reset_buffer_end:
+@
+
+The last step is to set [[BUFF_END]] to zero.
+
+<<Dump buffer with more>>=
+    LDX      #$00
+    JMP      buffer_char_set_buffer_end
+@
+
+The high-level routine [[buffer_char]] places the ASCII character in the [[A]]
+register into the end of the buffer.
+
+If the character was a newline, then we tail-call to [[dump_buffer_with_more]] to
+dump the buffer to the output and return. Calling [[dump_buffer_with_more]] also
+resets [[BUFF_END]] to zero.
+
+Otherwise, the character is first
+converted to uppercase if it is lowercase, then stored in the buffer and,
+if we haven't yet hit the end of the row, we increment [[BUFF_END]] and then return.
+
+Control characters (those under [[#$20]]) are not put in the buffer, and simply
+ignored.
+
+<<Buffer a character>>=
+buffer_char:
+    SUBROUTINE
+
+    LDX      BUFF_END
+    CMP      #$0D
+    BNE      .not_0D
+    JMP      dump_buffer_with_more
+
+.not_0D:
+    CMP      #$20
+    BCC      .set_buffer_end
+    CMP      #$60
+    BCC      .store_char
+    CMP      #$80
+    BCS      .store_char
+    SEC
+    SBC      #$20              ; converts to uppercase
+
+.store_char:
+    ORA      #$80              ; sets as normal text
+    STA      KBD_INPUT_AREA,X
+    CPX      WNDWDTH
+    BCS      .hit_right_limit
+    INX
+
+buffer_char_set_buffer_end:
+    STX      BUFF_END
+    RTS
+
+.hit_right_limit:
+@ %def buffer_char buffer_char_set_buffer_end
+
+If we have hit the end of a row, we're going to put the word we just wrote onto
+the next line.
+
+To do that, we search for the position of the last space in the
+buffer, or if there wasn't any space, we just use the position of the end of the
+row.
+
+<<Buffer a character>>=
+    LDA      #$A0  ; normal space
+
+.loop:
+    CMP      KBD_INPUT_AREA,X
+    BEQ      .endloop
+    DEX
+    BNE      .loop
+    LDX      WNDWDTH
+
+.endloop:
+@
+
+Now that we've found the position to break the line at, we dump the buffer up
+until that position using [[dump_buffer_with_more]], which also
+resets [[BUFF_END]] to zero.
+
+<<Buffer a character>>=
+    STX      BUFF_LINE_LEN
+    STX      BUFF_END
+    JSR      dump_buffer_with_more
+@
+
+Next, we increment [[BUFF_LINE_LEN]] to skip past the space. If we're past the
+window width though, we take the last character we added, move it to the
+end of the buffer (which should be the beginning of the buffer), increment
+[[BUFF_END]], then we increment [[BUFF_LINE_LEN]].
+
+<<Buffer a character>>=
+.increment_length:
+    INC      BUFF_LINE_LEN
+    LDX      BUFF_LINE_LEN
+    CPX      WNDWDTH
+    BCC      .move_last_char
+    BEQ      .move_last_char
+    RTS
+
+.move_last_char:
+    LDA      KBD_INPUT_AREA,X
+    LDX      BUFF_END
+    STA      KBD_INPUT_AREA,X
+    INC      BUFF_END
+    LDX      BUFF_LINE_LEN
+    JMP      .increment_length
+@
+
+\subsection{Z-coded strings}
+
+For how strings and characters are encoded, see
+\href{https://www.inform-fiction.org/zmachine/standards/z1point0/sect03.html}{section
+3 of the Z-machine standard}.
+
+The alphabet shifts are stored in [[SHIFT_ALPHABET]] for a one-character shift, and
+[[SHIFT_LOCK_ALPHABET]] for a locked shift. The routine [[get_alphabet]] gets the
+alphabet to use, accounting for shifts.
+
+<<Get alphabet>>=
+get_alphabet:
+    LDA      SHIFT_ALPHABET
+    BPL      .remove_shift
+    LDA      LOCKED_ALPHABET
+    RTS
+
+.remove_shift:
+    LDY      #$FF
+    STY      SHIFT_ALPHABET
+
+    get_alphabet_return:
+    RTS
+@ %def get_alphabet
+
+Since z-characters are encoded three at a time in two consecutive bytes in z-code, there's
+a state machine which determines where we are in the decompression. The state is stored
+in [[ZDECOMPRESS_STATE]].
+
+If [[ZDECOMPRESS_STATE]] is [[0]], then we need to load the next two bytes from z-code
+and extract the first character. If
+[[ZDECOMPRESS_STATE]] is [[1]], then we need to extract the second character. If
+[[ZDECOMPRESS_STATE]] is [[2]], then we need to extract the third character. And
+finally if [[ZDECOMPRESS_STATE]] is [[-1]], then we've reached the end of the string.
+
+The z-character is returned in the [[A]] register. Furthermore, the carry is set
+when requesting the next character, but we've already reached the end of the string.
+Otherwise the carry is cleared.
+
+<<Get next zchar>>=
+get_next_zchar:
+    LDA      ZDECOMPRESS_STATE
+    BPL      .check_for_char_1
+    SEC
+    RTS
+
+.check_for_char_1:
+    BNE      .check_for_char_2
+    INC      ZDECOMPRESS_STATE
+    JSR      get_next_code_word
+    LDA      SCRATCH2
+    STA      ZCHARS_L
+    LDA      SCRATCH2+1
+    STA      ZCHARS_H
+    LDA      ZCHARS_H
+    LSR      A
+    LSR      A
+    AND      #$1F
+    CLC
+    RTS
+
+.check_for_char_2:
+    SEC
+    SBC      #$01
+    BNE      .check_for_last
+    LDA      #$02
+    STA      ZDECOMPRESS_STATE
+    LDA      ZCHARS_H
+    LSR      A
+    LDA      ZCHARS_L
+    ROR      A
+    TAY
+    LDA      ZCHARS_H
+    LSR      A
+    LSR      A
+    TYA
+    ROR      A
+    LSR      A
+    LSR      A
+    LSR      A
+    AND      #$1F
+    CLC
+    RTS
+
+.check_for_last:
+    LDA      #$00
+    STA      ZDECOMPRESS_STATE
+    LDA      ZCHARS_H
+    BPL      .get_char_3
+    LDA      #$FF
+    STA      ZDECOMPRESS_STATE
+
+.get_char_3:
+    LDA      ZCHARS_L
+    AND      #$1F
+    CLC
+    RTS
+@ %def get_next_zchar
+
+The [[print_zstring]] routine prints the z-encoded string at [[Z_PC2]] to the screen. It uses
+[[get_next_zchar]] to get the next z-character, and handles alphabet shifts.
+
+We first initialize the shift state.
+
+<<Print zstring>>=
+print_zstring:
+    SUBROUTINE
+
+    LDA      #$00
+    STA      LOCKED_ALPHABET
+    STA      ZDECODE_STATE
+    LDA      #$FF
+    STA      SHIFT_ALPHABET
+@ %def print_zstring
+
+Next, we loop through the z-string, getting each z-character. We have to handle special
+z-characters separately.
+
+z-character [[0]] is always a space.
+
+z-character [[1]] means to look at the next z-character and use it as an index into
+the abbreviation table, printing that string.
+
+z-characters [[2]] and [[3]] shifts the alphabet forwards ([[A0]] to [[A1]] to [[A2]] to [[A0]])
+and backwards ([[A0]] to [[A2]] to [[A1]] to [[A0]]) respectively.
+
+z-characters [[4]] and [[5]] shift-locks the alphabet.
+
+All other characters will get translated to the ASCII character using the current alphabet.
+
+<<Print zstring>>=
+.loop:
+    JSR      get_next_zchar
+    BCC      .not_end
+    RTS
+
+.not_end:
+    STA      SCRATCH3
+    BEQ      .space
+    CMP      #$01
+    BEQ      .abbreviation
+    CMP      #$04
+    BCC      .shift_alphabet
+    CMP      #$06
+    BCC      .shift_lock_alphabet
+    JSR      get_alphabet
+@
+
+<<Printing a space>>=
+.space:
+    LDA      #$20
+    JMP      .printchar
+@
+
+<<Shifting alphabets>>=
+.shift_alphabet:
+    JSR      get_alphabet
+    CLC
+    ADC      #$02
+    ADC      SCRATCH3
+    JSR      A_mod_3
+    STA      SHIFT_ALPHABET
+    JMP      .loop
+
+.shift_lock_alphabet:
+    JSR      get_alphabet
+    CLC
+    ADC      SCRATCH3
+    JSR      A_mod_3
+    STA      LOCKED_ALPHABET
+    JMP      .loop
+@
+
+When printing an abbrevation, we multiply the z-character by 2 to get an address index
+into [[Z_ABBREV_TABLE]]. The address from the table is then stored in [[SCRATCH2]],
+and we recurse into [[print_zstring]] to print the abbreviation. This involves saving
+and restoring the current decompress state.
+
+<<Printing an abbreviation>>=
+.abbreviation:
+    JSR      get_next_zchar
+    ASL      A
+    ADC      #$01
+    TAY
+    LDA      (Z_ABBREV_TABLE),Y
+    STA      SCRATCH2
+    DEY
+    LDA      (Z_ABBREV_TABLE),Y
+    STA      SCRATCH2+1
+
+    ; Save the decompress state
+
+    LDA      LOCKED_ALPHABET
+    PHA
+    LDA      ZDECODE_STATE
+    PHA
+    LDA      ZCHARS_L
+    PHA
+    LDA      ZCHARS_H
+    PHA
+    LDA      Z_PC2_L
+    PHA
+    LDA      Z_PC2_H
+    PHA
+    LDA      Z_PC2_HH
+    PHA
+
+    JSR      load_packed_address
+    JSR      print_zstring
+
+    ; Restore the decompress state
+
+    PLA
+    STA      Z_PC2_HH
+    PLA
+    STA      Z_PC2_H
+    PLA
+    STA      Z_PC2_L
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID2
+    PLA
+    STA      ZCHARS_H
+    PLA
+    STA      ZCHARS_L
+    PLA
+    STA      ZDECODE_STATE
+    PLA
+    STA      LOCKED_ALPHABET
+    LDA      #$FF              ; Resets any temporary shift
+    STA      SHIFT_ALPHABET
+    JMP      .loop
+@
+
+If we are on alphabet [[0]], then we print the ASCII character directly by adding [[#$5B]]. Remember that
+we are handling 26 z-characters [[6-31]], so the ASCII characters will be [[a-z]].
+
+<<Print zstring>>=
+    ORA      #$00
+    BNE      .check_for_alphabet_A1
+    LDA      #$5B
+
+.add_ascii_offset:
+    CLC
+    ADC      SCRATCH3
+
+.printchar:
+    JSR      buffer_char
+    JMP      .loop
+
+.check_for_alphabet_A1:
+@
+
+Alphabet [[1]] handles uppercase characters [[A-Z]], so we add [[#$3B]] to the z-char.
+
+<<Print zstring>>=
+    CMP      #$01
+    BNE      .map_ascii_for_A2
+    LDA      #$3B
+    JMP      .add_ascii_offset
+
+.map_ascii_for_A2:
+@
+
+Alphabet [[2]] is more complicated because it doesn't map consecutively onto ASCII characters.
+
+z-character [[6]] in alphabet [[2]] means that the two subsequent z-characters specify a ten-bit
+ZSCII character code: the next z-character gives the top 5 bits and the one after the bottom 5.
+However, in this version of the interpreter, only 8 bits are kept, and these are simply ASCII
+values.
+
+z-character [[7]] causes a [[CRLF]] to be output.
+
+Otherwise, we map the z-character to the ASCII character using the [[a2_table]] table.
+
+<<A2 table>>=
+a2_table:
+    DC       "0123456789.,!?_#"
+    DC       '"
+    DC       "'/\-:()"
+@ %def a2_table
+
+<<Print zstring>>=
+    LDA      SCRATCH3
+    SEC
+    SBC      #$07
+    BCC      .z10bits
+    BEQ      .crlf
+    TAY
+    DEY
+    LDA      a2_table,Y
+    JMP      .printchar
+@
+
+<<Printing a CRLF>>=
+.crlf:
+    LDA      #$0D
+    JSR      buffer_char
+    LDA      #$0A
+    JMP      .printchar
+@
+
+<<Printing a 10-bit ZSCII character>>=
+.z10bits:
+    JSR      get_next_zchar
+    ASL      A
+    ASL      A
+    ASL      A
+    ASL      A
+    ASL      A
+    PHA
+    JSR      get_next_zchar
+    STA      SCRATCH3
+    PLA
+    ORA      SCRATCH3
+    JMP      .printchar
+@
+
+[[print_string_literal]] is a high-level routine that prints a string literal to the screen,
+where the string literal is in z-code at the current [[Z_PC]].
+
+<<Printing a string literal>>=
+print_string_literal:
+    SUBROUTINE
+
+    LDA      Z_PC
+    STA      Z_PC2_L
+    LDA      Z_PC+1
+    STA      Z_PC2_H
+    LDA      Z_PC+2
+    STA      Z_PC2_HH
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID2
+    JSR      print_zstring
+    LDA      Z_PC2_L
+    STA      Z_PC
+    LDA      Z_PC2_H
+    STA      Z_PC+1
+    LDA      Z_PC2_HH
+    STA      Z_PC+2
+    LDA      ZCODE_PAGE_VALID2
+    STA      ZCODE_PAGE_VALID
+    LDA      ZCODE_PAGE_ADDR2
+    STA      ZCODE_PAGE_ADDR
+    LDA      ZCODE_PAGE_ADDR2+1
+    STA      ZCODE_PAGE_ADDR+1
+    RTS
+@
+
+\subsection{Input}
+
+The [[read_line]] routine dumps whatever is in the output buffer to the output, then reads a line of input from the keyboard, storing it in the
+[[KBD_INPUT_AREA]] buffer. The buffer is terminated with a newline character.
+
+The routine then checks if the transcript flag is set in the header, and if so, it dumps the buffer to the printer. The buffer is then truncated to the maximum number of characters allowed.
+
+The routine then converts the characters to lowercase, and returns.
+
+The [[A]] register will contain the number of characters in the buffer.
+
+<<Read line>>=
+read_line:
+    SUBROUTINE
+
+    JSR      dump_buffer_line
+    LDA      WNDTOP
+    STA      CURR_LINE
+    JSR      GETLN1
+    INC      CURR_LINE
+    LDA      #$8D               ; newline
+    STA      KBD_INPUT_AREA,X
+    INX                         ; X = num of chars in input
+    TXA
+    PHA                         ; save X
+    LDY      #HEADER_FLAGS2_OFFSET+1
+    LDA      (Z_HEADER_ADDR),Y
+    AND      #$01               ; Mask for transcript on
+    BEQ      .continue
+    TXA
+    STA      BUFF_END
+    JSR      dump_buffer_to_printer
+    LDA      #$00
+    STA      BUFF_END
+
+.continue
+    PLA                         ; restore num of chars in input
+    LDY      #$00               ; truncate to max num of chars
+    CMP      (OPERAND0),Y
+    BCC      .continue2
+    LDA      (OPERAND0),Y
+
+.continue2:
+    PHA                         ; save num of chars
+    BEQ      .end
+    TAX
+
+.loop:
+    LDA      KBD_INPUT_AREA,Y   ; convert A-Z to lowercase
+    AND      #$7F
+    CMP      #$41
+    BCC      .continue3
+    CMP      #$5B
+    BCS      .continue3
+    ORA      #$20
+
+.continue3:
+    INY
+    STA      (OPERAND0),Y
+    CMP      #$0D
+    BEQ      .end
+    DEX
+    BNE      .loop
+
+.end:
+    PLA                         ; restore num of chars
+    RTS
+@ %def read_line
+
+\subsection{Lexical parsing} \label{sec:parsing}
+
+After reading a line, the Z-machine needs to parse it into words and then look up those words in the dictionary. The [[sread]] instruction combines [[read_line]] with parsing.
+
+[[sread]] redisplays the status line, then reads characters from the keyboard until a newline is entered. The characters are stored in the buffer at the z-address in [[OPERAND0]], and parsed into the buffer at the z-address in [[OPERAND1]].
+
+Prior to this instruction, the first byte in the text buffer must contain the
+maximum number of characters to accept as input, minus 1.
+
+After the line is read, the line is split into words (separated by the separators space, period, comma, question mark, carriage return, newline, tab, or formfeed), and each word is looked up in the dictionary.
+
+The number of words parsed is written in byte 1 of the parse buffer, and then follows the tokens.
+
+Each token is 4 bytes. The first two bytes are the address of the word in the dictionary (or 0 if not found), followed by the length of the word, followed by the index into the buffer where the word starts.
+
+<<Instruction sread>>=
+instr_sread:
+    SUBROUTINE
+
+    JSR      print_status_line
+    ADDW     OPERAND0, Z_HEADER_ADDR, OPERAND0  ; text buffer
+    ADDW     OPERAND1, Z_HEADER_ADDR, OPERAND1  ; parse buffer
+    JSR      read_line      ; SCRATCH3H = read_line() (input_count)
+    STA      SCRATCH3+1
+    LDA      #$00           ; SCRATCH3L = 0  (char count)
+    STA      SCRATCH3
+    LDY      #$01
+    LDA      #$00           ; store 0 in the parse buffer + 1.
+    STA      (OPERAND1),Y
+    LDA      #$02
+    STA      TOKEN_INDEX
+    LDA      #$01
+    STA      INPUT_PTR
+@ %def instr_sread
+
+Loop:
+
+We check the next two bytes in the parse buffer, and if they are the same,
+we are done.
+
+<<Instruction sread>>=
+.loop_word:
+    LDY      #$00           ; if parsebuf[0] == parsebuf[1] do_instruction
+    LDA      (OPERAND1),Y
+    INY
+    CMP      (OPERAND1),Y
+    BNE      .not_end1
+    JMP      do_instruction
+@
+
+Also, if the char count and input buffer len are zero, we are done.
+
+<<Instruction sread>>=
+.not_end1:
+    LDA      SCRATCH3+1     ; if input_count == char_count == 0 do_instruction
+    ORA      SCRATCH3
+    BNE      .not_end2
+    JMP      do_instruction
+@
+
+If the char count isn't yet 6, then we need more chars.
+
+<<Instruction sread>>=
+.not_end2:
+    LDA      SCRATCH3       ; if char_count != 6 .not_min_compress_size
+    CMP      #$06
+    BNE      .not_min_compress_size
+    JSR      skip_separators
+@
+
+If the char count is 0, then we can initialize the 6-byte area in [[ZCHAR_SCRATCH1]]
+with zero.
+
+<<Instruction sread>>=
+.not_min_compress_size:
+    LDA      SCRATCH3
+    BNE      .nonzero
+    LDY      #$06
+    LDX      #$00
+
+.clear:
+    LDA      #$00
+    STA      ZCHAR_SCRATCH1,X
+    INX
+    DEY
+    BNE      .clear
+@
+
+Next we set up the token. Byte 3 in a token is the index into the text buffer where the word starts ([[INPUT_PTR]]). We then check if the character pointed
+to is a dictionary separator (which needs to be treated as a word)
+or a standard separator (which needs to be skipped over). And if the character
+is a standard separator, we increment the input pointer and decrement the input count and loop back.
+
+<<Instruction sread>>=
+    LDA      INPUT_PTR          ; parsebuf[TOKEN_INDEX+3] = INPUT_PTR
+    LDY      TOKEN_INDEX
+    INY
+    INY
+    INY
+    STA      (OPERAND1),Y
+    LDY      INPUT_PTR          ; is_dict_separator(textbuf[INPUT_PTR])
+    LDA      (OPERAND0),Y
+    JSR      is_dict_separator
+    BCS      .is_dict_separator
+    LDY      INPUT_PTR          ; is_std_separator(textbuf[INPUT_PTR])
+    LDA      (OPERAND0),Y
+    JSR      is_std_separator
+    BCC      .not_separator
+    INC      INPUT_PTR          ; ++INPUT_PTR
+    DEC      SCRATCH3+1         ; --input_count
+    JMP      .loop_word
+@
+
+If [[char_count]] is zero, we have run out of characters, so we need to search through
+the dictionary with whatever we've collected in the [[ZCHAR_SCRATCH1]] buffer.
+
+We also check if the character is a separator, and if so, we again search through
+the dictionary with whatever we've collected in the [[ZCHAR_SCRATCH1]] buffer.
+
+Otherwise, we can store the character in the [[ZCHAR_SCRATCH1]] buffer, increment the char count and input pointer and decrement the input count. Then loop back.
+
+<<Instruction sread>>=
+.not_separator:
+    LDA      SCRATCH3+1
+    BEQ      .search
+    LDY      INPUT_PTR          ; is_separator(textbuf[INPUT_PTR])
+    LDA      (OPERAND0),Y
+    JSR      is_separator
+    BCS      .search
+    LDY      INPUT_PTR          ; ZCHAR_SCRATCH1[char_count] = textbuf[INPUT_PTR]
+    LDA      (OPERAND0),Y
+    LDX      SCRATCH3
+    STA      ZCHAR_SCRATCH1,X
+    DEC      SCRATCH3+1         ; --input_count
+    INC      SCRATCH3           ; ++char_count
+    INC      INPUT_PTR          ; ++INPUT_PTR
+    JMP      .loop_word
+@
+
+If it's a dictionary separator, we store the character in the [[ZCHAR_SCRATCH1]] buffer, increment the char count and input pointer and decrement the input count. Then we fall through to search.
+
+<<Instruction sread>>=
+.is_dict_separator:
+    STA      ZCHAR_SCRATCH1
+    INC      SCRATCH3
+    DEC      SCRATCH3+1
+    INC      INPUT_PTR
+@
+
+To begin, if we haven't collected any characters, then just go back and loop again.
+
+Next, we store the number of characters in the token into the current token at byte 2. Although we will only compare the first 6 characters, we store the number of input characters in the token.
+
+<<Instruction sread>>=
+.search:
+    LDA      SCRATCH3
+    BEQ      .loop_word
+    LDA      SCRATCH3+1     ; Save input_count
+    PHA
+    LDY      TOKEN_IDX      ; parsebuf[TOKEN_IDX+2] = char_count
+    INY
+    INY
+    LDA      SCRATCH3
+    STA      (OPERAND1),Y
+@
+
+We then convert these characters into z-characters, which we then search through the
+dictionary for. We store the z-address of the found token (or zero if not found) into
+the token, and then loop back for the next word.
+
+<<Instruction sread>>=
+    JSR      ascii_to_zchar
+    JSR      match_dictionary_word
+    LDY      TOKEN_IDX              ; parsebuf[TOKEN_IDX] = entry_addr
+    LDA      SCRATCH1+1
+    STA      (OPERAND1),Y
+    INY
+    LDA      SCRATCH1
+    STA      (OPERAND1),Y
+
+    INY                             ; TOKEN_IDX += 4
+    INY
+    INY
+    STY      TOKEN_IDX
+
+    LDY      #$01                   ; ++parsebuf[1]
+    LDA      (OPERAND1),Y
+    CLC
+    ADC      #$01
+    STA      (OPERAND1),Y
+
+    PLA
+    STA      SCRATCH3+1
+    LDA      #$00
+    STA      SCRATCH3
+    JMP      .loop_word
+@
+
+\subsubsection{Separators}
+
+<<Skip separators>>=
+skip_separators:
+    SUBROUTINE
+
+    LDA      SCRATCH3+1
+    BNE      .not_end
+    RTS
+
+.not_end:
+    LDY      INPUT_PTR
+    LDA      (OPERAND0),Y
+    JSR      is_separator
+    BCC      .not_separator
+    RTS
+
+.not_separator:
+    INC      INPUT_PTR
+    DEC      SCRATCH3+1
+    INC      SCRATCH3
+    JMP      skip_separators
+@ %def skip_separators
+
+<<Separator checks>>=
+SEPARATORS_TABLE:
+    DC       #$20, #$2E, #$2C, #$3F, #$0D, #$0A, #$09, #$0C
+
+is_separator:
+    SUBROUTINE
+
+    JSR      is_dict_separator
+    BCC      is_std_separator
+    RTS
+
+is_std_separator:
+    SUBROUTINE
+
+    LDY      #$00
+    LDX      #$08
+
+.loop:
+    CMP      SEPARATORS_TABLE,Y
+    BEQ      .found
+    INY
+    DEX
+    BNE      .loop
+
+.not_found:
+    CLC
+    RTS
+
+.found:
+    SEC
+    RTS
+
+is_dict_separator:
+    SUBROUTINE
+
+    PHA
+    JSR      get_dictionary_addr
+    LDY      #$00
+    LDA      (SCRATCH2),Y
+    TAX
+    PLA
+
+.loop:
+    BEQ      .not_found
+    INY
+    CMP      (SCRATCH2),Y
+    BEQ      .found
+    DEX
+    JMP      .loop
+@ %def SEPARATORS_TABLE is_separator is_dict_separator is_std_separator
+
+\subsubsection{ASCII to Z-chars}
+
+The [[ascii_to_zchar]] routine converts the ASCII characters in the input buffer
+to z-characters.
+
+We first set the [[LOCKED_ALPHABET]] shift to alphabet 0, and then clear the [[ZCHAR_SCRATCH2]] buffer with [[05]] (pad) zchars.
+
+<<ASCII to Zchar>>=
+ascii_to_zchar:
+    SUBROUTINE
+
+    LDA      #$00
+    STA      LOCKED_ALPHABET
+    LDX      #$00
+    LDY      #$06
+
+.clear:
+    LDA      #$05
+    STA      ZCHAR_SCRATCH2,X
+    INX
+    DEY
+    BNE      .clear
+
+    LDA      #$06
+    STA      SCRATCH3+1         ; nchars = 6
+    LDA      #$00
+    STA      SCRATCH1           ; dest_index = 0
+    STA      SCRATCH2           ; index = 0
+@ %def ascii_to_zchar
+
+Next we loop over the input buffer, converting each character in [[ZCHAR_SCRATCH1]] to a z-character. If the character is zero, we store a pad zchar.
+
+<<ASCII to Zchar>>=
+.loop:
+    LDX      SCRATCH2           ; c = ZCHAR_SCRATCH1[index++]
+    INC      SCRATCH2
+    LDA      ZCHAR_SCRATCH1,X
+    STA      SCRATCH3
+    BNE      .continue
+    LDA      #$05
+    JMP      .store_zchar
+@
+
+We first check to see which alphabet the character is in. If the alphabet is the same
+as the alphabet we're currently locked into, then we go to [[.same_alphabet]] because we don't need to shift the alphabet.
+
+<<ASCII to Zchar>>=
+.continue:
+    LDA      SCRATCH1           ; save dest_index
+    PHA
+    LDA      SCRATCH3           ; alphabet = case(c)
+    JSR      get_case
+    STA      SCRATCH1
+    CMP      LOCKED_ALPHABET
+    BEQ      .same_alphabet
+@
+
+Otherwise we check the next character to see if it's in the same alphabet as the current
+character. If they're different, then we should shift the alphabet, not lock it.
+
+<<ASCII to Zchar>>=
+    LDX      SCRATCH2
+    LDA      ZCHAR_SCRATCH1,X
+    JSR      get_case
+    CMP      SCRATCH1
+    BNE      .shift_alphabet
+@
+
+We then determine which direction to shift lock the alphabet to, store the shifting
+character into [[SCRATCH1+1]], and set the locked alphabet to the new alphabet.
+
+<<ASCII to Zchar>>=
+    SEC                         ; shift_char = shift lock char (4 or 5)
+    SBC      LOCKED_ALPHABET
+    CLC
+    ADC      #$03
+    JSR      A_mod_3
+    CLC
+    ADC      #$03
+    STA      SCRATCH1+1
+    MOVB     SCRATCH1, LOCKED_ALPHABET  ; LOCKED_ALPHABET = alphabet
+@
+
+Then we store the shift lock character into the destination buffer.
+
+<<ASCII to Zchar>>=
+    PLA                         ; restore dest_index
+    STA      SCRATCH1
+    LDA      SCRATCH1+1         ; ZCHAR_SCRATCH2[dest_index] = shift_char
+    LDX      SCRATCH1
+    STA      ZCHAR_SCRATCH2,X
+    INC      SCRATCH1           ; ++dest_index
+@
+
+If we've run out of room in the destination buffer, then we simply go to compress
+the destination buffer and return. Otherwise we will add the character to the destination buffer by
+going to [[.same_alphabet]].
+
+<<ASCII to Zchar>>=
+    DEC      SCRATCH3+1         ; --nchars
+    BNE      .add_shifted_char
+    JMP      z_compress
+
+.add_shifted_char:
+    LDA      SCRATCH1           ; save dest_index
+    PHA
+    JMP      .same_alphabet
+@
+
+To temporarily shift the alphabet, we determine which character we need to use to shift it out of the current alphabet ([[LOCKED_ALPHABET]]), and put it in the destination buffer. Then, if we've run out of characters in the destination buffer, we simply go to compress the destination buffer and return.
+
+<<ASCII to Zchar>>=
+.shift_alphabet:
+    LDA      SCRATCH1           ; shift_char = shift char (2 or 3)
+    SEC
+    SBC      LOCKED_ALPHABET
+    CLC
+    ADC      #$03
+    JSR      A_mod_3
+    TAX
+    INX
+    PLA
+    STA      SCRATCH1           ; restore dest_index
+    TXA                         ; ZCHAR_SCRATCH2[dest_index] = shift_char
+    LDX      SCRATCH1
+    STA      ZCHAR_SCRATCH2,X
+    INC      SCRATCH1           ; ++dest_index
+    DEC      SCRATCH3+1         ; --nchars
+    BNE      .save_dest_index_and_same_alphabet
+
+stretchy_z_compress:
+    JMP      z_compress
+@ %def stretchy_z_compress
+
+If the character to save is lowercase, we can simply subtract [[#$5B]] such that 'a' = 6, and so on.
+
+<<ASCII to Zchar>>=
+.save_dest_index_and_same_alphabet:
+    LDA      SCRATCH1           ; save dest_index
+    PHA
+
+.same_alphabet:
+    PLA
+    STA      SCRATCH1           ; restore dest_index
+    LDA      SCRATCH3
+    JSR      get_case
+    SEC
+    SBC      #$01               ; alphabet_minus_1 = case(c) - 1
+    BPL      .not_lowercase
+    LDA      SCRATCH3
+    SEC
+    SBC      #$5B               ; c -= 'a'-6
+@
+
+Then we store the character in the destination buffer, and move on to the next character,
+unless the destination buffer is full, in which case we compress and return.
+
+<<ASCII to Zchar>>=
+.store_zchar:
+    LDX      SCRATCH1           ; ZCHAR_SCRATCH2[dest_index] = c
+    STA      ZCHAR_SCRATCH2,X
+    INC      SCRATCH1           ; ++dest_index
+    DEC      SCRATCH3+1         ; --nchars
+    BEQ      .dest_full
+    JMP      .loop
+
+.dest_full:
+    JMP      z_compress
+@
+
+If the character was upper case, then we can subtract [[#$3B]] such that 'A' = 6, and so on, and then store the character in the same way.
+
+<<ASCII to Zchar>>=
+.not_lowercase:
+    BNE      .not_alphabetic
+    LDA      SCRATCH3
+    SEC
+    SBC      #$3B               ; c -= 'A'-6
+    JMP      .store_zchar
+@
+
+Now if the character isn't upper or lower case, then it's a non-alphabetic character.
+We first search in the non-alphabetic table, and if found, we can store that character and continue.
+
+<<ASCII to Zchar>>=
+.not_alphabetic:
+    LDA      SCRATCH3
+    JSR      search_nonalpha_table
+    BNE      .store_zchar
+@
+
+If, however, the character is simply not representable in the z-characters, then we store a z-char newline (6), and, if there's still room in the destination buffer, we store the high 3 bits of the unrepresentable character and store it in the destination buffer, and, if there's still room, we take the low 5 bits and store that in the destination buffer.
+
+This works because the newline character can never be a part of the input, so it serves
+here as an escaping character.
+
+<<ASCII to Zchar>>=
+    LDA      #$06               ; ZCHAR_SCRATCH2[dest_index] = 6
+    LDX      SCRATCH1
+    STA      ZCHAR_SCRATCH2,X
+    INC      SCRATCH1           ; ++dest_index
+    DEC      SCRATCH3+1         ; --nchars
+    BEQ      z_compress
+
+    LDA      SCRATCH3           ; ZCHAR_SCRATCH2[dest_index] = c >> 5
+    LSR      A
+    LSR      A
+    LSR      A
+    LSR      A
+    LSR      A
+    AND      #$03
+    LDX      SCRATCH1
+    STA      ZCHAR_SCRATCH2,X
+    INC      SCRATCH1           ; ++dest_index
+    DEC      SCRATCH3+1         ; --nchars
+    BEQ      z_compress
+
+    LDA      SCRATCH3           ; c &= 0x1F
+    AND      #$1F
+    JMP      .store_zchar
+@
+
+\subsubsection{Searching the dictionary}
+
+The address of the dictionary is stored in the header, and the
+[[get_dictionary_addr]] routine gets the absolute address of the dictionary and
+stores it in [[SCRATCH2]].
+
+<<Get dictionary address>>=
+get_dictionary_addr:
+    SUBROUTINE
+
+    LDY      #HEADER_DICT_OFFSET
+    LDA      (Z_HEADER_ADDR),Y
+    STA      SCRATCH2+1
+    INY
+    LDA      (Z_HEADER_ADDR),Y
+    STA      SCRATCH2
+    ADDW     SCRATCH2, Z_HEADER_ADDR, SCRATCH2
+    RTS
+@ %def get_dictionary_addr
+
+The [[match_dictionary_word]] routines searches for a word in the dictionary, returning
+in [[SCRATCH1]] the z-address of the matching dictionary entry, or zero if not found.
+
+<<Match dictionary word>>=
+match_dictionary_word:
+    SUBROUTINE
+
+    JSR      get_dictionary_addr
+    LDY      #$00                   ; number of dict separators
+    LDA      (SCRATCH2),Y
+    TAY                             ; skip past and get entry length
+    INY
+    LDA      (SCRATCH2),Y
+    ASL      A                      ; search_size = entry length x 16
+    ASL      A
+    ASL      A
+    ASL      A
+    STA      SCRATCH3
+    INY                             ; entry_index = num dict entries
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1+1
+    INY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1
+    INY
+    TYA
+    ADDA     SCRATCH2               ; entry_addr = start of dictionary entries
+    LDY      #$00
+    JMP      .try_match
+@ %def match_dictionary_word
+
+Since the dictionary is stored in lexicographic order, if we ever find a word that is greater than the word we are looking for, or we reach the end of the dictionary,
+then we can stop searching.
+
+Instead of searching incrementally, we actually search in steps of 16 entries. When we've located the chunk of entries that our word should be in, we then search through the 16 entries to find the word, or fail.
+
+<<Match dictionary word>>=
+.loop:
+    LDA      (SCRATCH2),Y
+    CMP      ZCHAR_SCRATCH2[1]
+    BCS      .possible
+
+.try_match:
+    ADDB2    SCRATCH2, SCRATCH3     ; entry_addr += search_size
+    SEC                             ; entry_index -= 16
+    LDA      SCRATCH1
+    SBC      #$10
+    STA      SCRATCH1
+    BCS      .loop
+    DEC      SCRATCH1+1
+    BPL      .loop
+@
+
+<<Match dictionary word>>=
+.possible:
+    SUBB2    SCRATCH2, SCRATCH3     ; entry_addr -= search_size
+    ADDB2    SCRATCH1, #$10         ; entry_index += 16
+    LDA      SCRATCH3               ; search_size /= 16
+    LSR      A
+    LSR      A
+    LSR      A
+    LSR      A
+    STA      SCRATCH3
+@
+
+Now we compare the word. The words in the dictionary are numerically big-endian while the words in the [[ZCHAR_SCRATCH2]] buffer are numerically little-endian, which explains the unusual order of the comparisons.
+
+Since we know that the dictionary word must be in this chunk of 16 words if it exists, then if our word is less than the dictionary word, we can stop searching and declare failure.
+
+<<Match dictionary word>>=
+.inner_loop:
+    LDY      #$00
+    LDA      ZCHAR_SCRATCH2+1
+    CMP      (SCRATCH2),Y
+    BCC      .not_found
+    BNE      .inner_next
+
+    INY
+    LDA      ZCHAR_SCRATCH2
+    CMP      (SCRATCH2),Y
+    BCC      .not_found
+    BNE      .inner_next
+
+    LDY      #$02
+    LDA      ZCHAR_SCRATCH2+3
+    CMP      (SCRATCH2),Y
+    BCC      .not_found
+    BNE      .inner_next
+
+    INY
+    LDA      ZCHAR_SCRATCH2+2
+    CMP      (SCRATCH2),Y
+    BCC      .not_found
+    BEQ      .found
+
+.inner_next:
+    ADDB2    SCRATCH2, SCRATCH3     ; entry_addr += search_size
+    SUBB     SCRATCH1, #$01         ; --entry_index
+    LDA      SCRATCH1
+    ORA      SCRATCH1+1
+    BNE      .inner_loop
+@
+
+If the search failed, we return 0 in [[SCRATCH1]].
+
+<<Match dictionary word>>=
+.not_found:
+    STOW     #$0000, SCRATCH1
+    RTS
+@
+
+Otherwise, return the z-address (i.e. the absolute address minus the header address) of the dictionary entry.
+
+<<Match dictionary word>>=
+.found:
+    SUBW     SCRATCH2, Z_HEADER_ADDR, SCRATCH1
+    RTS
+@
+
+\chapter{Arithmetic routines}
+
+\subsection{Negation and sign manipulation}
+
+[[negate]] negates the word in [[SCRATCH2]].
+
+<<negate>>=
+negate:
+    SUBROUTINE
+
+    SUBW     #$0000, SCRATCH2, SCRATCH2
+    RTS
+@ %def negate
+
+[[flip_sign]] negates the word in [[SCRATCH2]] if the sign bit in
+the [[A]] register is set, i.e. if signed [[A]] is negative. We
+also keep track of the number of flips in [[SIGN_BIT]].
+
+<<Flip sign>>=
+flip_sign:
+    SUBROUTINE
+
+    ORA      #$00
+    BMI      .do_negate
+    RTS
+
+.do_negate:
+    INC      SIGN_BIT
+    JMP      negate
+@ %def flip_sign
+
+[[check_sign]] sets the sign bit of [[SCRATCH2]] to support
+a 16-bit signed multiply, divide, or modulus operation on [[SCRATCH1]]
+and [[SCRATCH2]]. That is, if the sign bits are the same, [[SCRATCH2]]
+retains its sign bit, otherwise its sign bit is flipped.
+
+The [[SIGN_BIT]] value also contains the number of negative sign
+bits in [[SCRATCH1]] and [[SCRATCH2]], so 0, 1, or 2.
+
+<<Check sign>>=
+check_sign:
+    SUBROUTINE
+
+    LDA      #$00
+    STA      SIGN_BIT
+    LDA      SCRATCH2+1
+    JSR      flip_sign
+    LDA      SCRATCH1+1
+    JSR      flip_sign
+    RTS
+@ %def check_sign
+
+[[set_sign]] checks the number of negatives counted up in
+[[SIGN_BIT]] and sets the sign bit of [[SCRATCH2]] accordingly. That is,
+odd numbers of negative signs will flip the sign bit of [[SCRATCH2]].
+
+<<Set sign>>=
+set_sign:
+    SUBROUTINE
+
+    LDA      SIGN_BIT
+    AND      #$01
+    BNE      negate
+    RTS
+@ %def set_sign
+
+\subsection{16-bit multiplication}
+
+[[mulu16]] multiples the unsigned word in [[SCRATCH1]] by the unsigned
+word in [[SCRATCH2]], storing the result in [[SCRATCH1]].
+
+Note that this routine only handles unsigned multiplication. Taking care of signs is part of [[instr_mul]], which uses this routine and the sign manipulation routines.
+
+<<mulu16>>=
+mulu16:
+    SUBROUTINE
+
+    PSHW     SCRATCH3
+    STOW     #$0000, SCRATCH3
+    LDX      #$10
+
+.loop:
+    LDA      SCRATCH1
+    CLC
+    AND      #$01
+    BEQ      .next_bit
+    ADDWC    SCRATCH2, SCRATCH3, SCRATCH3
+
+.next_bit:
+    RORW      SCRATCH3
+    RORW      SCRATCH1
+    DEX
+    BNE      .loop
+
+    MOVW     SCRATCH1, SCRATCH2
+    MOVW     SCRATCH3, SCRATCH1
+    PULW     SCRATCH3
+    RTS
+@ %def mulu16
+
+\subsection{16-bit division}
+
+[[divu16]] divides the unsigned word in [[SCRATCH2]] (the dividend) by the unsigned
+word in [[SCRATCH1]] (the divisor), storing the quotient in [[SCRATCH2]] and the
+remainder in [[SCRATCH1]].
+
+Under this routine, the result of division by zero is a quotient of $2^{16}-1$, while the remainder depends on the high bit of the dividend. If the dividend's high bit is 0, the remainder is the dividend. If the dividend's high bit is 1, the remainder is the dividend with the high bit set to 0.
+
+Note that this routine only handles unsigned division. Taking care of signs is part of [[instr_div]], which uses this routine and the sign manipulation routines.
+
+The idea behind this routine is to do long division. We bring the dividend into a scratch space one bit at a time (starting with the most significant bit) and see if the divisor fits into it. It it does, we can record a 1 in the quotient, and subtract the divisor from the scratch space. If it doesn't, we record a 0 in the quotient. We do this for all 16 bits in the dividend. Whatever remains in the scratch space is the remainder.
+
+For example, suppose we want to divide decimal [[SCRATCH2 = 37 = 0b10101]] by [[SCRATCH1 = 10 = 0b1010]]. This is something the [[print_number]] routine might do.
+
+The routine starts with storing [[SCRATCH2]] to [[SCRATCH3 = 37 = 0b100101]] and then setting [[SCRATCH2]] to zero. This is our scratch space, and will ultimately become the remainder.
+
+Interestingly here, we don't start with shifting the dividend. Instead we do the subtraction first. There's no harm in this, since we are guaranteed that the subtraction will fail (be negative) on the first iteration, so we shift in a zero.
+
+It should be clear that as we shift the dividend into the scratch space, eventually the scratch space will contain [[0b10010]], and the subtraction will succeed. We then shift in a 1 into the quotient, and subtract the divisor [[0b1010]] from the scratch space [[0b10010]], leaving [[0b1000]]. There is now only one bit left in the dividend ([[1]]).
+
+We shift that into the scratch space, which is now [[0b10001]], and
+the subtraction will succeed again. We shift in a 1 into the quotient, and subtract the divisor from the scratch space, leaving [[0b111]]. There are no bits left in the dividend, so we are done. The quotient is [[0b11 = 3]] and the scratch space is [[0b111 = 7]], which is the remainder as expected.
+
+Because the algorithm always does the shift, it will also shift the
+remainder one time too many, which is why the last step is to shift it
+right and store the result.
+
+Here's a trace of the algorithm:
+
+<<trace of divu16>>=
+Begin, x=17: s1=0000000000001010, s2=0000000000000000, s3=0000000000100101
+Loop,  x=16: s1=0000000000001010, s2=0000000000000000, s3=0000000001001010
+Loop,  x=15: s1=0000000000001010, s2=0000000000000000, s3=0000000010010100
+Loop,  x=14: s1=0000000000001010, s2=0000000000000000, s3=0000000100101000
+Loop,  x=13: s1=0000000000001010, s2=0000000000000000, s3=0000001001010000
+Loop,  x=12: s1=0000000000001010, s2=0000000000000000, s3=0000010010100000
+Loop,  x=11: s1=0000000000001010, s2=0000000000000000, s3=0000100101000000
+Loop,  x=10: s1=0000000000001010, s2=0000000000000000, s3=0001001010000000
+Loop,  x=09: s1=0000000000001010, s2=0000000000000000, s3=0010010100000000
+Loop,  x=08: s1=0000000000001010, s2=0000000000000000, s3=0100101000000000
+Loop,  x=07: s1=0000000000001010, s2=0000000000000000, s3=1001010000000000
+Loop,  x=06: s1=0000000000001010, s2=0000000000000001, s3=0010100000000000
+Loop,  x=05: s1=0000000000001010, s2=0000000000000010, s3=0101000000000000
+Loop,  x=04: s1=0000000000001010, s2=0000000000000100, s3=1010000000000000
+Loop,  x=03: s1=0000000000001010, s2=0000000000001001, s3=0100000000000000
+Loop,  x=02: s1=0000000000001010, s2=0000000000010010, s3=1000000000000000
+Loop,  x=01: s1=0000000000001010, s2=0000000000010001, s3=0000000000000001
+Loop,  x=00: s1=0000000000001010, s2=0000000000001110, s3=0000000000000011
+End,   x=00: s1=0000000000001010, s2=0000000000001110, s3=0000000000000011
+After adjustment shift and remainder storage:
+End,   x=00: s1=0000000000000111, s2=0000000000000011
+@
+
+Notice that [[SCRATCH3]] is used for both the dividend and the quotient. As we shift
+bits out of the left of the dividend and into the scratch space [[SCRATCH2]], we also shift bits into the right as the quotient. After going through 16 bits, the dividend is all out and the quotient is all in.
+
+<<divu16>>=
+divu16:
+    SUBROUTINE
+
+    PSHW     SCRATCH3
+    MOVW     SCRATCH2, SCRATCH3 ; SCRATCH3 is the dividend
+    STOW     #$0000, SCRATCH2   ; SCRATCH2 is the remainder
+    LDX      #$11
+
+.loop:
+    SEC                     ; carry = "not borrow"
+    LDA      SCRATCH2       ; Remainder minus divisor (low byte)
+    SBC      SCRATCH1
+    TAY
+    LDA      SCRATCH2+1
+    SBC      SCRATCH1+1
+    BCC      .skip          ; Divisor did not fit
+
+    ; At this point carry is set, which will affect
+    ; the ROLs below.
+
+    STA      SCRATCH2+1     ; Save remainder
+    TYA
+    STA      SCRATCH2
+
+.skip:
+    ROLW     SCRATCH3       ; Shift carry into divisor/quotient left
+    ROLW     SCRATCH2       ; Shift divisor/remainder left
+    DEX
+    BNE      .loop          ; loop end
+
+    CLC                     ; SCRATCH1 = SCRATCH2 >> 1
+    LDA      SCRATCH2+1
+    ROR      A
+    STA      SCRATCH1+1
+    LDA      SCRATCH2
+    ROR      A
+    STA      SCRATCH1           ; remainder
+    MOVW     SCRATCH3, SCRATCH2 ; quotient
+    PULW     SCRATCH3
+    RTS
+@ %def divu16
+
+\subsection{16-bit comparison}
+
+[[cmpu16]] compares the unsigned words in [[SCRATCH2]] to the unsigned word in [[SCRATCH1]]. For example, if, as an unsigned comparison, [[SCRATCH2<SCRATCH1]], then [[BCC]] will detect this condition.
+
+<<cmpu16>>=
+cmpu16:
+    SUBROUTINE
+
+    LDA      SCRATCH2+1
+    CMP      SCRATCH1+1
+    BNE      .end
+    LDA      SCRATCH2
+    CMP      SCRATCH1
+.end:
+    RTS
+@ %def cmpu16
+
+[[cmp16]] compares the two signed words in [[SCRATCH1]] and [[SCRATCH2]].
+
+<<cmp16>>=
+cmp16:
+    SUBROUTINE
+
+    LDA      SCRATCH1+1
+    EOR      SCRATCH2+1
+    BPL      cmpu16
+    LDA      SCRATCH1+1
+    CMP      SCRATCH2+1
+    RTS
+@ %def cmp16
+
+\subsection{Other routines}
+
+[[A_mod_3]] is a routine that calculates the modulus of the [[A]] register with 3,
+by repeatedly subtracting 3 until the result is less than 3. <3 It
+is used in the Z-machine to calculate the alphabet shift.
+
+<<A mod 3>>=
+A_mod_3:
+    CMP      #$03
+    BCC      .end
+    SEC
+    SBC      #$03
+    JMP      A_mod_3
+
+.end:
+    RTS
+@ %def A_mod_3
+
+\subsection{Printing numbers}
+
+The [[print_number]] routine prints the signed number in [[SCRATCH2]] as decimal to the output buffer.
+
+<<Print number>>=
+print_number:
+    SUBROUTINE
+
+    LDA      SCRATCH2+1
+    BPL      .print_positive
+    JSR      print_negative_num
+
+.print_positive:
+    STOB     #$00, SCRATCH3
+
+.loop:
+    LDA      SCRATCH2+1
+    ORA      SCRATCH2
+    BEQ      .is_zero
+    STOW     #$000A, SCRATCH1
+    JSR      divu16
+    LDA      SCRATCH1
+    PHA
+    INC      SCRATCH3
+    JMP      .loop
+
+.is_zero:
+    LDA      SCRATCH3
+    BEQ      .print_0
+
+.print_digit:
+    PLA
+    CLC
+    ADC      #$30           ; '0'
+    JSR      buffer_char
+    DEC      SCRATCH3
+    BNE      .print_digit
+    RTS
+
+.print_0:
+    LDA      #$30           ; '0'
+    JMP      buffer_char
+@ %def print_number
+
+The [[print_negative_num]] routine is a utility used by [[print_num]], just to print
+the negative sign and negate the number before printing the rest.
+
+<<Print negative number>>=
+print_negative_num:
+    SUBROUTINE
+
+    LDA      #$2D           ; '-'
+    JSR      buffer_char
+    JMP      negate
+@ %def print_negative_num
+
+\chapter{The instruction dispatcher}
+
+\section{Executing an instruction}
+
+The addresses for instructions handlers are stored in tables, organized by
+number of operands:
+
+<<Instruction tables>>=
+routines_table_0op:
+    WORD     instr_rtrue
+    WORD     instr_rfalse
+    WORD     instr_print
+    WORD     instr_print_ret
+    WORD     instr_nop
+    WORD     instr_save
+    WORD     instr_restore
+    WORD     instr_restart
+    WORD     instr_ret_popped
+    WORD     instr_pop
+    WORD     instr_quit
+    WORD     instr_new_line
+
+routines_table_1op:
+    WORD     instr_jz
+    WORD     instr_get_sibling
+    WORD     instr_get_child
+    WORD     instr_get_parent
+    WORD     instr_get_prop_len
+    WORD     instr_inc
+    WORD     instr_dec
+    WORD     instr_print_addr
+    WORD     illegal_opcode
+    WORD     instr_remove_obj
+    WORD     instr_print_obj
+    WORD     instr_ret
+    WORD     instr_jump
+    WORD     instr_print_paddr
+    WORD     instr_load
+    WORD     instr_not
+
+routines_table_2op:
+    WORD     illegal_opcode
+    WORD     instr_je
+    WORD     instr_jl
+    WORD     instr_jg
+    WORD     instr_dec_chk
+    WORD     instr_inc_chk
+    WORD     instr_jin
+    WORD     instr_test
+    WORD     instr_or
+    WORD     instr_and
+    WORD     instr_test_attr
+    WORD     instr_set_attr
+    WORD     instr_clear_attr
+    WORD     instr_store
+    WORD     instr_insert_obj
+    WORD     instr_loadw
+    WORD     instr_loadb
+    WORD     instr_get_prop
+    WORD     instr_get_prop_addr
+    WORD     instr_get_next_prop
+    WORD     instr_add
+    WORD     instr_sub
+    WORD     instr_mul
+    WORD     instr_div
+    WORD     instr_mod
+
+routines_table_var:
+    WORD     instr_call
+    WORD     instr_storew
+    WORD     instr_storeb
+    WORD     instr_put_prop
+    WORD     instr_sread
+    WORD     instr_print_char
+    WORD     instr_print_num
+    WORD     instr_random
+    WORD     instr_push
+    WORD     instr_pull
+@ %def routines_table_0op routines_table_1op routines_table_2op routines_table_var
+
+Instructions from this table get executed with all operands loaded in
+[[OPERAND0-OPERAND3]], the address of the routine table to use in
+[[SCRATCH2]], and the index into the table stored in the [[A]] register. Then we can
+execute the instruction. This involves looking up the routine address,
+storing it in [[SCRATCH1]], and jumping to it.
+
+All instructions must, when they are complete, jump back to [[do_instruction]].
+
+<<Execute instruction>>=
+.opcode_table_jump:
+    ASL      A
+    TAY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1
+    INY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1+1
+    JSR      debug
+    JMP      (SCRATCH1)
+@ %def .opcode_table_jump
+
+The call to [[debug]] is just a return, but I suspect that it was used
+during development to provide a place to put a debugging hook, for example, to
+print out the state of the Z-machine on every instruction.
+
+\section{Retrieving the instruction}
+
+We execute the instruction at the current program counter by first retrieving
+its opcode. [[get_next_code_byte]] retrieves the code byte at [[Z_PC]], placing
+it in [[A]], and then increments [[Z_PC]].
+
+<<Do instruction>>=
+do_instruction:
+    SUBROUTINE
+
+    LDA      Z_PC                   ; Save PC for debugging
+    STA      TMP_Z_PC
+    LDA      Z_PC+1
+    STA      TMP_Z_PC+1
+    LDA      Z_PC+2
+    STA      TMP_Z_PC+2
+    LDA      #$00
+    STA      OPERAND_COUNT
+    JSR      get_next_code_byte
+    STA      CURR_OPCODE
+@ %def do_instruction
+
+\section{Decoding the instruction}
+
+Next, we determine what kind of instruction it is based on its number of
+operands.
+
+\begin{table}[]
+\begin{tabular}{ll}
+\multicolumn{1}{c}{Byte range} & \multicolumn{1}{c}{Type}    \\
+0x00-0x7F                    & 2op                          \\
+0x80-0xAF                    & 1op                          \\
+0xB0-0xBF                    & 0op                          \\
+0xC0-0xFF                    & needs next byte to determine
+\end{tabular}
+\end{table}
+
+<<Do instruction>>=
+    CMP      #$80
+    BCS      .is_gte_80
+    JMP      .do_2op
+.is_gte_80:
+    CMP      #$B0
+    BCS      .is_gte_B0
+    JMP      .do_1op
+.is_gte_B0:
+    CMP      #$C0
+    BCC      .do_0op
+    JSR      get_next_code_byte
+
+<<Get variable instruction operands>>
+@
+
+Handling a 0op-type instruction is easy enough. We check for the legal opcode
+range ([[B0-BB]]), otherwise it's an illegal instruction. Then we load
+the 0op instruction table into [[SCRATCH2]], leaving the [[A]] register with
+the offset into the table of the instruction to execute.
+
+<<Handle 0op instruction>>=
+.do_0op:
+    SEC
+    SBC      #$B0
+    CMP      #$0C
+    BCC      .load_opcode_table
+    JMP      illegal_opcode
+
+.load_opcode_table:
+    PHA
+    LDA      #<routine_table_0op
+    STA      SCRATCH2
+    LDA      #>routine_table_0op
+    STA      SCRATCH2+1
+    PLA
+    JMP      .opcode_table_jump
+@
+
+Handling a 1op-type instruction (opcodes [[80-AF]]) is a little more complicated.
+Since only opcodes [[X8]] are illegal, this is handled in the 1op routine table.
+Opcodes [[80-8F]] take a 16-bit operand, opcodes [[90-9F]] take an 8-bit operand
+zero-extended to 16 bits, and opcodes [[A0-AF]] take a variable operand, whose
+content is 16 bits.
+
+The resulting 16-bit operand is placed in [[OPERAND0]]. [[OPERAND_COUNT]] is
+set to [[1]].
+
+Then we load
+the 1op instruction table into [[SCRATCH2]], leaving the [[A]] register with
+the offset into the table of the instruction to execute.
+
+<<Handle 1op instructions>>=
+.do_1op:
+    AND      #$30
+    BNE      .is_90_to_AF
+    JSR      get_const_word   ; Get operand for opcodes 80-8F
+    JMP      .1op_arg_loaded
+
+.is_90_to_AF:
+    CMP      #$10
+    BNE      .is_A0_to_AF
+    JSR      get_const_byte   ; Get operand for opcodes 90-9F
+    JMP      .1op_arg_loaded
+
+.is_A0_to_AF:
+    JSR      get_var_content  ; Get operand for opcodes A0-AF
+
+.1op_arg_loaded:
+    LDA      #$01
+    STA      OPERAND_COUNT
+    LDA      SCRATCH2
+    STA      OPERAND0
+    LDA      SCRATCH2+1
+    STA      OPERAND0+1
+    LDA      CURR_OPCODE
+    AND      #$0F
+    CMP      #$10
+    BCC      .go_to_1op
+    JMP      illegal_opcode
+
+.go_to_1op:
+    PHA
+    LDA      #<routines_table_1op
+    STA      SCRATCH2
+    LDA      #>routines_table_1op
+    STA      SCRATCH2+1
+    PLA
+    JMP      .opcode_table_jump
+@
+
+Handling a 2op-type instruction (opcodes [[00-7F]]) is a little more complicated.
+Opcodes [[00-3F]] are followed by a single byte to be zero-extended into a 16-bit
+operand, while opcodes [[40-7F]] are followed by a single byte representing a
+variable address. After that, opcodes [[00-1F]] and [[40-5F]] have a single byte
+to be zero-extended into a 16-bit operand, and the other opcodes are followed by
+a single byte representing a variable address.
+
+Operand are stored consecutively in [[OPERAND0-OPERAND1]]. [[OPERAND_COUNT]] is
+set to [[2]].
+
+Then we check for illegal instructions, which are those with the low 5 bits in
+the range [[19-1F]].
+
+Then we load
+the 2op instruction table into [[SCRATCH2]], leaving the [[A]] register with
+the offset into the table of the instruction to execute.
+
+<<Handle 2op instruction>>=
+.do_2op:
+    AND      #$40
+    BNE      .first_arg_is_var
+    JSR      get_const_byte
+    JMP      .get_next_arg
+
+.first_arg_is_var:
+    JSR      get_var_content
+
+.get_next_arg:
+    LDA      SCRATCH2
+    STA      OPERAND0
+    LDA      SCRATCH2+1
+    STA      OPERAND0+1
+    LDA      CURR_OPCODE
+    AND      #$20
+    BNE      .second_arg_is_var
+    JSR      get_const_byte
+    JMP      .store_second_arg
+
+.second_arg_is_var:
+    JSR      get_var_content
+
+.store_second_arg:
+    LDA      SCRATCH2
+    STA      OPERAND1
+    LDA      SCRATCH2+1
+    STA      OPERAND03
+    LDA      #$02
+    STA      OPERAND_COUNT
+    LDA      CURR_OPCODE
+
+.check_for_good_2op:
+    AND      #$1F
+    CMP      #$19
+    BCC      .go_to_op2
+    JMP      illegal_opcode
+
+.go_to_op2:
+    PHA
+    LDA      #<routine_table_2op
+    STA      SCRATCH2
+    LDA      #>routine_table_2op
+    STA      SCRATCH2+1
+    PLA
+    JMP      .opcode_table_jump
+@ %def .check_for_good_2op
+
+Handling a varop-type instruction (opcodes [[C0-FF]]) is the most complicated.
+The next byte is a map that determines the next operands. We look at two
+consecutive bits, starting from the most significant. The operand types are
+encoded as follows:
+
+\begin{table}[]
+\begin{tabular}{lll}
+\multicolumn{1}{c}{Bits} & \multicolumn{1}{c}{Type} & \multicolumn{1}{c}{Bytes in operand}  \\
+00                    & Large constant (0x0000-0xFFFF) & 2 \\
+01                    & Small constant (0x00-0xFF)     & 1 \\
+10                    & Variable address                & 1 \\
+11                    & None (ends operand list)        & 0
+\end{tabular}
+\end{table}
+
+The values of the operands are stored consecutively starting in location
+[[OPERAND0]].
+
+<<Get variable instruction operands>>=
+    LDX      #$00
+
+.get_next_operand:
+    PHA
+    TAY
+    TXA
+    PHA
+    TYA
+    AND      #$C0
+    BNE      .is_01_10_11
+    JSR      get_const_word            ; handle 00
+    JMP      .store_operand
+
+.is_01_10_11:
+    CMP      #$80
+    BNE      .is_10_11
+    JSR      get_var_content           ; handle 01
+    JMP      .store_operand
+
+.is_10_11:
+    CMP      #$40
+    BNE      .is_11
+    JSR      get_const_byte            ; handle 10
+    JMP      .store_operand
+
+.is_11:
+    PLA
+    PLA
+    JMP      .handle_varoperand_opcode ; handle 11 (ends operand list)
+
+.store_operand:
+    PLA
+    TAX
+    LDA      SCRATCH2
+    STA      OPERAND0,X
+    LDA      SCRATCH2+1
+    STA      OPERAND0,X
+    INX
+    INX
+    INC      OPERAND_COUNT
+    PLA                                ; shift operand map left 2 bits
+    SEC
+    ROL      A
+    SEC
+    ROL      A
+    JMP      .get_next_operand
+
+<<Handle var operand opcode>>
+@
+
+Once the operands are loaded, we load [[SCRATCH2]] with the address of the
+table containing the instruction addresses. Opcodes [[E0-FF]] are VAR-type
+instructions, although opcodes [[EA-FF]] are illegal in version 1 of the
+interpreter. Opcodes [[C0-DF]] are 2op-type instructions, although opcodes
+[[D9-DF]] are illegal.
+
+<<Handle var operand opcode>>=
+.handle_varoperand_opcode:
+    LDA      #<routines_table_var
+    STA      SCRATCH2
+    LDA      #>routines_table_var
+    STA      SCRATCH2+1
+    LDA      CURR_OPCODE
+    CMP      #$E0
+    BCS      .is_vararg_instr
+    JMP      .check_for_good_2op
+
+.is_vararg_instr:
+    SBC      #$E0
+    CMP      #$0A
+    BCC      .opcode_table_jump
+    JMP      illegal_opcode
+@
+
+\section{Getting the instruction operands}
+
+The utility routine [[get_const_byte]] gets the next byte of Z-code and stores
+it as a zero-extended 16-bit word in [[SCRATCH2]].
+
+<<Get const byte>>=
+get_const_byte:
+    SUBROUTINE
+
+    JSR      get_next_code_byte
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+    RTS
+@ %def get_const_byte
+
+The utility routine [[get_const_word]] gets the next two bytes of Z-code and
+stores them as a 16-bit word in [[SCRATCH2]]. The word is stored big-endian in
+Z-code. The code in the routine is a little inefficient, since it uses the stack
+to shuffle bytes around, rather than storing the bytes directly in the right
+order.
+
+<<Get const word>>=
+get_const_word:
+    SUBROUTINE
+
+    JSR      get_next_code_byte
+    PHA
+    JSR      get_next_code_byte
+    STA      SCRATCH2
+    PLA
+    STA      SCRATCH2+1
+    RTS
+@ %def get_const_word
+
+The utility routine [[get_var_content]] gets the next byte of Z-code and
+interprets it as a Z-variable address, then retrieves the variable's 16-bit value and
+stores it in [[SCRATCH2]].
+
+Variable [[00]] always means the top of the Z-stack, and this will also pop the
+stack.
+
+Variables [[01-0F]] are ``locals'', and stored as 2-byte big-endian numbers in the
+zero-page at [[$9A-$B9]] (the [[LOCAL_ZVARS]] area).
+
+Variables [[10-FF]] are ``globals'', and are stored as 2-byte big-endian numbers
+in a location stored at [[GLOBAL_ZVARS_ADDR]].
+
+<<Get var content>>=
+get_var_content:
+    SUBROUTINE
+
+    JSR      get_next_code_byte         ; A = get_next_code_byte<Z_PC>
+    ORA      #$00                       ; if (!A) get_top_of_stack
+    BEQ      get_top_of_stack
+
+get_nonstack_var:
+    SUBROUTINE
+
+    CMP      #$10                       ; if (A < #$10) {
+    BCS      .compute_global_var_index
+    SEC                                 ;   SCRATCH2 = LOCAL_ZVARS[A - 1]
+    SBC      #$01
+    ASL      A
+    TAX
+    LDA      LOCAL_ZVARS,X
+    STA      SCRATCH2+1
+    INX
+    LDA      LOCAL_ZVARS,X
+    STA      SCRATCH2
+    RTS                                 ;   return
+                                        ; }
+
+.compute_global_var_index:
+    SEC                                 ; var_ptr = 2 * (A - #$10)
+    SBC      #$10
+    ASL      A
+    STA      SCRATCH1
+    LDA      #$00
+    ROL      A
+    STA      SCRATCH1+1
+
+.get_global_var_addr:
+    CLC                                 ; var_ptr += GLOBAL_ZVARS_ADDR
+    LDA      Z_GLOBALVARS
+    ADC      SCRATCH1
+    STA      SCRATCH1
+    LDA      Z_GLOBALVARS+1
+    ADC      SCRATCH1+1
+    STA      SCRATCH1+1
+
+.get_global_var_value:
+    LDY      #$00                       ; SCRATCH2 = *var_ptr
+    LDA      (SCRATCH1),Y
+    STA      SCRATCH2+1
+    INY
+    LDA      (SCRATCH1),Y
+    STA      SCRATCH2
+    RTS                                 ; return
+
+get_top_of_stack:
+    SUBROUTINE
+
+    JSR      pop                        ; SCRATCH2 = pop()
+    RTS                                 ; return
+@ %def get_var_content get_nonstack_var get_top_of_stack
+
+There's another utility routine [[var_get]] which does the
+same thing, except the variable address is already stored in the [[A]]
+register.
+
+<<Get var content in A>>=
+var_get:
+    SUBROUTINE
+
+    ORA      #$00
+    BEQ      pop_push
+    JMP      get_nonstack_var
+@ %def var_get
+
+The routine [[store_var]] stores [[SCRATCH2]] into the variable in the next
+code byte, while [[store_var2]] stores [[SCRATCH2]] into the variable in the
+[[A]] register. Since variable [[0]] is the stack, storing into variable [[0]]
+is equivalent to pushing onto the stack.
+
+<<Store var>>=
+store_var:
+    SUBROUTINE
+
+    LDA      SCRATCH2               ; A = get_next_code_byte()
+    PHA
+    LDA      SCRATCH2+1
+    PHA
+    JSR      get_next_code_byte
+    TAX
+    PLA
+    STA      SCRATCH2+1
+    PLA
+    STA      SCRATCH2
+    TXA
+
+store_var2:
+    SUBROUTINE
+
+    ORA      #$00
+    BNE      .nonstack
+    JMP      push
+
+.nonstack:
+    CMP      #$10
+    BCS      .global_var
+    SEC
+    SBC      #$01
+    ASL      A
+    TAX
+    LDA      SCRATCH2+1
+    STA      LOCAL_ZVARS,X
+    INX
+    LDA      SCRATCH2
+    STA      LOCAL_ZVARS,X
+    RTS
+
+.global_var:
+    SEC
+    SBC      #$10
+    ASL      A
+    STA      SCRATCH1
+    LDA      #$00
+    ROL      A
+    STA      SCRATCH1+1
+    CLC
+    LDA      GLOBAL_ZVARS_ADDR
+    ADC      SCRATCH1
+    STA      SCRATCH1
+    LDA      GLOBAL_ZVARS_ADDR+1
+    ADC      SCRATCH1+1
+    STA      SCRATCH1+1
+    LDY      #$00
+    LDA      SCRATCH2+1
+    STA      (SCRATCH1),Y
+    INY
+    LDA      SCRATCH2
+    STA      (SCRATCH1),Y
+    RTS
+@ %def store_var
+
+The [[var_put]] routine stores the value in [[SCRATCH2]] into the variable
+in the [[A]] register. Note that if the variable is [[0]], then it replaces the
+top value on the stack.
+
+<<Store to var A>>=
+var_put:
+    SUBROUTINE
+
+    ORA      #$00
+    BEQ      .pop_push
+    JMP      store_var2
+
+pop_push:
+    JSR      pop
+    JMP      push
+
+.pop_push:
+    LDA      SCRATCH2
+    PHA
+    LDA      SCRATCH2+1
+    PHA
+    JSR      pop
+    PLA
+    STA      SCRATCH2+1
+    PLA
+    STA      SCRATCH2
+    JMP      push
+@ %def var_put pop_push
+
+\chapter{Calls and returns}
+
+\section{Call} \label{sec:call}
+
+The [[call]] instruction calls the routine at the packed address in operand 0.
+A call may have anywhere from 0 to 3 arguments,
+and a routine always has a return value. Note that calls to address 0 merely returns false (0).
+
+The z-code byte after the operands gives the variable in which to store the return value from the call.
+
+<<Instruction call>>=
+instr_call:
+    LDA      OPERAND0
+    ORA      OPERAND0+1
+    BNE      .push_frame
+    STOW     $#0000, SCRATCH2
+    JMP      store_and_next
+@ %def instr_call
+
+Packed addresses are byte addresses divided by two.
+
+The routine's arguments are stored in local variables (starting from variable 1). Such used local
+variables are saved before the call, and restored after the call.
+
+As usual with calls, calls push a frame onto the stack, while returns pop a frame off the stack.
+
+The frame consists of the frame's stack count, [[Z_PC]], and the frame's stack pointer.
+
+<<Instruction call>>=
+.push_frame:
+    MOV      FRAME_STACK_COUNT, SCRATCH2
+    MOV      Z_PC, SCRATCH2+1
+    JSR      push
+    MOVW     FRAME_Z_SP, SCRATCH2
+    JSR      push
+    MOVW     Z_PC+1, SCRATCH2
+    JSR      push
+    STOB     #$00, ZCODE_PAGE_VALID
+@
+
+Next, we unpack the call address and put it in [[Z_PC]].
+
+<<Instruction call>>=
+    LDA      OPERAND0
+    ASL      A
+    STA      Z_PC
+    LDA      OPERAND0+1
+    ROL      A
+    STA      Z_PC+1
+    LDA      #$00
+    ROL      A
+    STA      Z_PC+2
+@
+
+The first byte in a routine is the number of local variables (0-15). We now retrieve it
+(and save it for later).
+
+<<Instruction call>>=
+    JSR      get_next_code_byte     ; local_var_count = get_next_code_byte()
+    PHA                             ; Save local_var_count
+    ORA      #$00
+    BEQ      .after_loop2
+@
+
+Now we push and initialize the local variables. The next words in the routine are the initial
+values of the local variables.
+
+<<Instruction call>>=
+    LDX      #$00                   ; X = 0
+
+.push_and_init_local_vars:
+    PHA                             ; Save local_var_count
+    LDA      LOCAL_ZVARS,X          ; Push LOCAL_ZVAR[X] onto the stack
+    STA      SCRATCH2+1
+    INX
+    LDA      LOCAL_ZVARS,X
+    STA      SCRATCH2
+    DEX
+    TXA
+    PHA
+    JSR      push
+
+    JSR      get_next_code_byte     ; SCRATCH2 = next init val
+    PHA
+    JSR      get_next_code_byte
+    STA      SCRATCH2
+    PLA
+    STA      SCRATCH2+1
+
+    PLA                             ; Restore local_var_count
+    TAX
+    LDA      SCRATCH2+1             ; LOCAL_ZVARS[X] = SCRATCH2
+    STA      LOCAL_ZVARS,X
+    INX
+    LDA      SCRATCH2
+    STA      LOCAL_ZVARS,X
+    INX                             ; Increment X
+    PLA                             ; Decrement local_var_count
+    SEC
+    SBC      #$01
+    BNE      .push_and_init_local_vars  ; Loop until no more vars
+@
+
+Next, we load the local variables with the call arguments.
+
+<<Instruction call>>=
+.after_loop2:
+    LDA      OPERAND_COUNT          ; count = OPERAND_COUNT - 1
+    STA      SCRATCH3
+    DEC      SCRATCH3
+    BEQ      .done_init_local_vars  ; if (!count) .done_init_local_vars
+
+    STOB     #$00, STRATCH1         ; operand = 0
+    STOB     #$00, STRATCH2         ; zvar = 0
+
+.loop:
+    LDX      SCRATCH1               ; LOCAL_ZVARS[zvar] = OPERAND0[operand]
+    LDA      OPERAND0+1,X
+    LDX      SCRATCH2
+    STA      LOCAL_ZVARS,X
+    INC      SCRATCH2
+    LDX      SCRATCH1
+    LDA      OPERAND0,X
+    LDX      SCRATCH2
+    STA      LOCAL_ZVARS,X
+    INC      SCRATCH2               ; ++zvar
+    INC      SCRATCH1               ; ++operand
+    INC      SCRATCH1
+    DEC      SCRATCH3               ; --count
+    BNE      .loop                  ; if (count) .loop
+@
+
+Finally, we add the local var count to the frame, update [[FRAME_STACK_COUNT]]
+and [[FRAME_Z_SP]], and jump to the routine's first instruction.
+
+<<Instruction call>>=
+.done_init_local_vars:
+    PULB     SCRATCH2               ; Restore local_var_count
+    JSR      push                   ; Push local_var_count
+    MOV      STACK_COUNT, FRAME_STACK_COUNT
+    MOVW     Z_SP, FRAME_Z_SP
+    JMP      do_instruction
+@
+
+\begin{tikzpicture}[node distance = 0pt]
+    \node [splitstackbox] (lvl0) {[[n]]\nodepart{two}---};
+    \node [fullstackbox,  below=-0.8pt of lvl0] (lvl1) {[[LOCAL_ZVAR[n-1] ]]};
+    \node [tallstackbox,  below=-0.8pt of lvl1] (lvl2) {$\cdot$ \\ $\cdot$ \\ $\cdot$};
+    \node [fullstackbox,  below=-0.8pt of lvl2] (lvl3) {[[LOCAL_ZVAR[0] ]]};
+    \node [splitstackbox, below=-0.8pt of lvl3] (lvl4) {[[Z_PC + 1]]\nodepart{two}[[Z_PC + 2]]};
+    \node [fullstackbox,  below=-0.8pt of lvl4] (lvl5) {[[FRAME_Z_SP]]};
+    \node [splitstackbox, below=-0.8pt of lvl5] (lvl6) {[[FRAME_STACK_COUNT]]\nodepart{two}[[Z_PC]]};
+    \node [tallstackbox,  below=-0.8pt of lvl6] (lvl7) {$\cdot$ \\ $\cdot$ \\ $\cdot$};
+    \node [splitstackbox, below=-0.8pt of lvl7] (lvl8) {[[n']]\nodepart{two}---};
+
+    \draw [thick] (lvl8.south west) -- +(0, -3);
+    \draw [thick] (lvl8.south east) -- +(0, -3);
+    \draw [Circle-Straight Barb, thick] let \p1 = (lvl5.west), \p2 = (lvl5.center) in (\x1+0.5cm, \y1-0.01cm) -- +(-1,0) |- (lvl8.west);
+
+    \draw [decorate, decoration={brace,amplitude=5pt,raise=1ex}, thick] (lvl0.north east) -- (lvl6.south east) node [black, midway, xshift=1ex, label={[align=left]right:Frame}] {};
+
+    \draw [decorate, decoration={brace,amplitude=5pt,raise=1ex}, thick] (lvl7.north east) -- (lvl7.south east) node [black, midway,xshift=1ex, label={[align=left]right:Routine stack}] {};
+
+    \node [right=0 of lvl8, label={[align=left]right:Previous frame}] {};
+\end{tikzpicture}
+
+\section{Return} \label{sec:return}
+
+The [[ret]] instruction returns from a routine. It effectively undoes what [[call]] did.
+First, we set the stack pointer and count to the frame's stack pointer and count.
+
+<<Instruction ret>>=
+instr_ret:
+    SUBROUTINE
+
+    MOVW     FRAME_Z_SP, Z_SP
+    MOVB     FRAME_STACK_COUNT, STACK_COUNT
+@ %def instr_ret
+
+Next, we restore the locals. We first pop the number of locals off the stack, and if
+there were none, we can skip the whole local restore process.
+
+<<Instruction ret>>=
+    JSR      pop
+    LDA      SCRATCH2
+    BEQ      .done_locals
+@
+
+We then set up the loop variables for restoring the locals.
+
+<<Instruction ret>>=
+    STOW     LOCAL_ZVARS-2, SCRATCH1    ; ptr = &LOCAL_ZVARS[-1]
+    MOVB     SCRATCH2, SCRATCH3         ; count = STRATCH2
+    ASL      A                          ; ptr += 2 * count
+    ADDA     SCRATCH1
+@
+
+Now we pop the locals off the stack in reverse order.
+
+<<Instruction ret>>=
+.loop:
+    JSR      pop                ; SCRATCH2 = pop()
+    LDY      #$01               ; *ptr = SCRATCH2
+    LDA      SCRATCH2
+    STA      (SCRATCH1),Y
+    DEY
+    LDA      SCRATCH2+1
+    STA      (SCRATCH1),Y
+    SUBB     SCRATCH1, #$02     ; ptr -= 2
+    DEC      SCRATCH3           ; --count
+    BNE      .loop
+@
+
+Next, we restore [[Z_PC]] and the frame stack pointer and count.
+
+<<Instruction ret>>=
+.done_locals:
+    JSR      pop
+    MOVW     SCRATCH2, Z_PC+1
+    JSR      pop
+    MOVW     SCRATCH2, FRAME_Z_SP
+    JSR      pop
+    MOVB     SCRATCH2+1, Z_PC
+    MOVB     SCRATCH2, FRAME_STACK_COUNT
+@
+
+Finally, we store the return value.
+
+<<Instruction ret>>=
+    STOB     #$00, ZCODE_PAGE_VALID
+    MOVW     OPERAND0, SCRATCH2
+    JMP      store_and_next
+@
+
+\chapter{Objects}
+
+\section{Object table format}
+
+Objects are stored in an object table, and there are at most 255 of them. They are numbered from 1
+to 255, and object 0 is the ``nothing'' object.
+
+The object table contains 31 words (62 bytes) for property defaults, and then at most 255 objects, each
+containing 9 bytes.
+
+The first 4 bytes of each object entry are 32 bits of attribute flags (offsets 0-3).
+Next is the parent object number (offset 4), the sibling object number (offset 5),
+and the child object number (offset 6). Finally, there are two bytes of properties
+(offsets 7 and 8).
+
+\section{Getting an object's address}
+
+The [[get_object_address]] routine gets the address of the object number in the [[A]] register and
+puts it in [[SCRATCH2]].
+
+It does this by first setting [[SCRATCH2]] to 9 times the [[A]] register (since objects entries
+are 9 bytes long).
+
+<<Get object address>>=
+get_object_addr:
+    SUBROUTINE
+
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+    LDA      SCRATCH2
+    ASL      SCRATCH2
+    ROL      SCRATCH2+1
+    ASL      SCRATCH2
+    ROL      SCRATCH2+1
+    ASL      SCRATCH2
+    ROL      SCRATCH2+1
+    CLC
+    ADC      SCRATCH2
+    BCC      .continue
+    INC      SCRATCH2+1
+    CLC
+
+.continue:
+@ %def get_object_addr
+
+Next, we add [[FIRST_OBJECT_OFFSET]] ([[53]]) to [[SCRATCH2]]. This skips the 31 words of property defaults, which
+would be 62 bytes, but since object numbers start from 1, the first object is at [[53+9=62]] bytes.
+
+<<Get object address>>=
+    ADC      #FIRST_OBJECT_OFFSET
+    STA      SCRATCH2
+    BCC      .continue2
+    INC      SCRATCH2+1
+
+.continue2:
+@
+
+Finally, we get the address of the object table stored in the header and add it
+to [[SCRATCH2]]. The resulting address is thus in [[SCRATCH2]].
+
+<<Get object address>>=
+    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET-1
+    LDA      (Z_HEADER_ADDR),Y
+    CLC
+    ADC      SCRATCH2
+    STA      SCRATCH2
+    DEY
+    LDA      (Z_HEADER_ADDR),Y
+    ADC      SCRATCH2+1
+    ADC      Z_HEADER_ADDR+1
+    STA      SCRATCH2+1
+    RTS
+@
+
+\section{Removing an object}
+
+The [[remove_obj]] routine removes the object number in [[OPERAND0]] from the object tree. This
+detaches the object from its parent, but the object retains its children.
+
+Recall that an object is a node in a linked list. Each node contains a pointer to its parent,
+a pointer to its sibling (the next child of the parent), and a pointer to its first child. The
+null pointer is zero.
+
+First, we get the object's address, and then get its parent pointer. If the parent pointer
+is null, it means the object is already detached, so we return.
+
+<<Remove object>>=
+remove_obj:
+    SUBROUTINE
+
+    LDA      OPERAND0               ; obj_ptr = get_object_addr<obj_num>
+    JSR      get_object_addr
+    LDY      #OBJECT_PARENT_OFFSET  ; A = obj_ptr->parent
+    LDA      (SCRATCH2),Y
+    BNE      .continue              ; if (!A) return
+    RTS
+
+.continue:
+@ %def remove_obj
+
+Next, we save the object's address on the stack.
+
+<<Remove obj>>=
+    TAX                             ; save obj_ptr
+    LDA      SCRATCH2
+    PHA
+    LDA      SCRATCH2+1
+    PHA
+    TXA
+@
+
+Next, we get the parent's first child pointer.
+
+<<Remove obj>>=
+    JSR      get_object_addr        ; parent_ptr = get_object_addr<A>
+    LDY      #OBJECT_CHILD_OFFSET   ; child_num = parent_ptr->child
+    LDA      (SCRATCH2),Y
+@
+
+If the first child pointer isn't the object we want to detach, then we will need to traverse the
+children list to find it.
+
+<<Remove obj>>=
+    CMP      OPERAND0               ; if (child_num != obj_num) loop
+    BNE      .loop
+@
+
+But otherwise, we get the object's sibling and replace the parent's first child with it.
+
+<<Remove obj>>=
+    PLA                             ; restore obj_ptr
+    STA      SCRATCH1+1
+    PLA
+    STA      SCRATCH1
+    LDA      SCRATCH1
+    PHA
+    LDA      SCRATCH1+1
+    PHA
+    LDY      #OBJECT_SIBLING_OFFSET ; A = obj_ptr->next
+    LDA      (SCRATCH1),Y
+    LDY      #OBJECT_CHILD_OFFSET   ; parent_ptr->child = A
+    STA      (SCRATCH2),Y
+    JMP      .detach
+@
+
+Detaching the object means we null out the parent pointer of the object. Then we can return.
+
+<<Detach obj>>=
+.detach:
+    PLA                             ; restore obj_ptr
+    STA      SCRATCH2+1
+    PLA
+    STA      SCRATCH2
+    LDY      #OBJECT_PARENT_OFFSET  ; obj_ptr->parent = 0
+    LDA      #$00
+    STA      (SCRATCH2),Y
+    INY
+    STA      (SCRATCH2),Y
+    RTS
+@
+
+Looping over the children just involves traversing the children list
+and checking if the current child pointer is equal to the object we want to detach.
+For a self-consistent table, an object's parent must contain the object as a child,
+and so it would have to be found at some point.
+
+<<Remove obj>>=
+.loop:
+    JSR      get_object_addr        ; child_ptr = get_object_addr<child_num>
+    LDY      #OBJECT_SIBLING_OFFSET ; child_num = child_ptr->next
+    LDA      (SCRATCH2),Y
+    CMP      OPERAND0               ; if (child_num != obj_num) loop
+    BNE      .loop
+@
+
+[[SCRATCH2]] now contains the address of the child whose sibling is the object we want to detach. So,
+we set [[SCRATCH1]] to the object we want to detach, get its sibling, and set it as the sibling of
+the [[SCRATCH2]] object. Then we can detach the object.
+
+Diagram this.
+
+<<Remove obj>>=
+    PLA                             ; restore obj_ptr
+    STA      SCRATCH1+1
+    PLA
+    STA      SCRATCH1
+    LDA      SCRATCH1
+    PHA
+    LDA      SCRATCH1+1
+    PHA
+    LDA      (SCRATCH1),Y           ; child_ptr->next = obj_ptr->next
+    STA      (SCRATCH2),Y
+
+<<Detach obj>>                      ; detach
+@
+
+\section{Object strings} \label{sec:obj_strings}
+
+The [[print_obj_in_A]] routine prints the short name of the object in the [[A]] register. The
+short name of an object is stored at the beginning of the object's properties as a length-prefixed
+z-encoded string. The length is actually the number of words, not bytes or characters, and is a
+single byte. This means that the number of bytes in the string is at most [[255*2=510]]. And since
+z-encoded characters are encoded as three characters for every two bytes, the number of characters
+in a short name is at most [[255*3=765]].
+
+<<Print object in A>>=
+print_obj_in_A:
+    JSR      get_object_addr        ; obj_ptr = get_object_addr<A>
+    LDY      #OBJECT_PROPS_OFFSET   ; props_ptr = obj_ptr->props
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1+1
+    INY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1
+    MOVW     SCRATCH1, SCRATCH2
+    INCW     SCRATCH2               ; ++props_ptr
+    JSR      load_address           ; Z_PC2 = props_ptr
+    JMP      print_zstring          ; print_zstring<Z_PC2>
+@ %def print_obj_in_A
+
+\section{Object attributes}
+
+The attributes of an object are stored in the first 4 bytes of the object in the object table. These
+were also called ``flags'' in the original Infocom source code, and as such, attributes are binary flags.
+The order of attributes in these bytes is such that attribute 0 is in bit 7 of byte 0, and attribute 31
+is in bit 0 of byte 3.
+
+The [[attr_ptr_and_mask]] routine is used in attribute instructions to get the pointer to the
+attributes for the object in [[OPERAND0]] and mask for the attribute number in [[OPERAND1]].
+
+The result from this routine is that [[SCRATCH1]] contains the relevant
+attribute word, [[SCRATCH3]] contains the relevant attribute mask, and [[SCRATCH2]] contains the address of the attribute word.
+
+We first set [[SCRATCH2]] to point to the 2-byte word containing the attribute.
+
+<<Get attribute pointer and mask>>=
+attr_ptr_and_mask:
+    LDA      OPERAND0           ; SCRATCH2 = get_object_addr<obj_num>
+    JSR      get_object_addr
+    LDA      OPERAND1           ; if (attr_num >= #$10) {
+    CMP      #$10               ;  SCRATCH2 += 2; attr_num -= #$10
+    BCC      .continue2         ; }
+    SEC
+    SBC      #$10
+    INCW     SCRATCH2
+    INCW     SCRATCH2
+
+.continue2:
+    STA      SCRATCH1           ; SCRATCH1 = attr_num
+@ %def attr_ptr_and_mask
+
+Next, we set [[SCRATCH3]] to [[#$0001]] and then bit-shift left by
+15 minus the attribute (mod 16) that we want. Thus, attribute 0 and
+attribute 16 will result in [[#$8000]].
+
+<<Get attribute pointer and mask>>=
+    STOW     #$0001, SCRATCH3
+    LDA      #$0F
+    SEC
+    SBC      SCRATCH1
+    TAX
+
+.shift_loop:
+    BEQ      .done_shift
+    ASL      SCRATCH3
+    ROL      SCRATCH3+1
+    DEX
+    JMP      .shift_loop
+
+.done_shift:
+@
+
+Finally, we load the attribute word into [[SCRATCH1]].
+
+<<Get attribute pointer and mask>>=
+    LDY      #$00
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1+1
+    INY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1
+    RTS
+@
+
+\section{Object properties}
+
+The pointer to the properties of an object is stored in the last 2 bytes of the object
+in the object table. The first ``property'' is actually the object's short name, as detailed
+in \nameref{sec:obj_strings}.
+
+Each property starts with a size byte, which is encoded with the lower 5 bits being the property
+number, and the upper 3 bits being the data size minus 1 (so 0 means 1 byte and 7 means 8 bytes).
+The property numbers are ordered from lowest to highest for more efficient searching.
+
+The [[get_property_ptr]] routine gets the pointer to the property
+table for the object in [[OPERAND0]] and stores it in [[SCRATCH2]].
+In addition, it returns the size of the first ``property''
+(the short name) in the [[Y]] register, so that [[SCRATCH2+Y]] would
+point to the first numbered property.
+
+<<Get property pointer>>=
+get_property_ptr:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      get_object_addr
+    LDY      #OBJECT_PROPS_OFFSET
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1+1
+    INY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1
+    ADDW     SCRATCH1, Z_HEADER_ADDR, SCRATCH2
+    LDY      #$00
+    LDA      (SCRATCH2),Y
+    ASL      A
+    TAY
+    INY
+    RTS
+@ %def get_property_ptr
+
+The [[get_property_num]] routine gets the property number being currently
+pointed to.
+
+<<Get property number>>=
+get_property_num:
+    SUBROUTINE
+
+    LDA      (SCRATCH2),Y
+    AND      #$1F
+    RTS
+@ %def get_property_num
+
+The [[get_property_len]] routine gets the length of the property being currently
+pointed to, minus one.
+
+<<Get property length>>=
+get_property_len:
+    SUBROUTINE
+
+    LDA      (SCRATCH2),Y
+    ROR      A
+    ROR      A
+    ROR      A
+    ROR      A
+    ROR      A
+    AND      #$07
+    RTS
+@ %def get_property_len
+
+The [[next_property]] routine updates the [[Y]] register to point to the next property in
+the property table.
+
+<<Next property>>=
+next_property:
+    SUBROUTINE
+
+    JSR      get_property_len
+    TAX
+
+.loop:
+    INY
+    DEX
+    BPL      .loop
+    INY
+    RTS
+@ %def next_property
+
+\chapter{Instructions}
+
+After an instruction finishes, it must jump to [[do_instruction]] in order to
+execute the next instruction.
+
+Note that return values from functions are always stored in [[OPERAND0]].
+
+\small
+
+\begin{tabularx}{\linewidth}{@{}ll@{}}
+\toprule
+\endhead
+\multicolumn{2}{c}{\thead{Data movement instructions}}\\
+\cmidrule{1-2}
+[[load]] & Loads a variable into a variable\\
+[[loadb]] & Loads a byte from a byte array into a variable\\
+[[loadb]] & Loads a word from a word array into a variable\\
+[[store]] & Stores a value into a variable\\
+[[storeb]] & Stores a byte into a byte array\\
+[[storew]] & Stores a word into a word array\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Stack instructions}}\\
+\cmidrule{1-2}
+[[pop]] & Throws away the top item from the stack\\
+[[pull]] & Pulls a value from the stack into a variable\\
+[[push]] & Pushes a value onto the stack\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Decrement/increment instructions}}\\
+\cmidrule{1-2}
+[[dec]] & Decrements a variable\\
+[[inc]] & Increments a variable\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Arithmetic instructions}}\\
+\cmidrule{1-2}
+[[add]] & Adds two signed 16-bit values, storing to a variable\\
+[[div]] & Divides two signed 16-bit values, storing to a variable\\
+[[mod]] & Modulus of two signed 16-bit values, storing to a variable\\
+[[mul]] & Multiplies two signed 16-bit values, storing to a variable\\
+[[random]] & Stores a random number to a variable\\
+[[sub]] & Subtracts two signed 16-bit values, storing to a variable\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Logical instructions}}\\
+\cmidrule{1-2}
+[[and]] & Bitwise ANDs two 16-bit values, storing to a variable\\
+[[not]] & Bitwise NOTs two 16-bit values, storing to a variable\\
+[[or]] & Bitwise ORs two 16-bit values, storing to a variable\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Conditional branch instructions}}\\
+\cmidrule{1-2}
+[[dec_chk]] & Decrements a variable then branches if less than value\\
+[[inc_chk]] & Increments a variable then branches if greater than value\\
+[[je]] & Branches if value is equal to any subsequent operand\\
+[[jg]] & Branches if value is (signed) greater than second operand\\
+[[jin]] & Branches if object is a direct child of second operand object\\
+[[jl]] & Branches if value is (signed) less than second operand\\
+[[jz]] & Branches if value is equal to zero\\
+[[test]] & Branches if all set bits in first operand are set in second operand\\
+[[test_attr]] & Branches if object has attribute in second operand set\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Jump and subroutine instructions}}\\
+\cmidrule{1-2}
+[[call]] & Calls a subroutine\\
+[[jump]] & Jumps unconditionally\\
+[[print_ret]] & Prints a string and returns true\\
+[[ret]] & Returns a value\\
+[[ret_popped]] & Returns the popped value from the stack\\
+[[rfalse]] & Returns false\\
+[[rtrue]] & Returns true\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Print instructions}}\\
+\cmidrule{1-2}
+[[new_line]] & Prints a newline\\
+[[print]] & Prints the immediate string\\
+[[print_addr]] & Prints the string at an address\\
+[[print_char]] & Prints the immediate character\\
+[[print_num]] & Prints the signed number\\
+[[print_obj]] & Prints the object's short name\\
+[[print_paddr]] & Prints the string at a packed address\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Object instructions}}\\
+\cmidrule{1-2}
+[[clear_attr]] & Clears an object's attribute\\
+[[get_child]] & Stores the object's first child into a variable\\
+[[get_next_prop]] & Stores the object's property number after the given property number into a variable\\
+[[get_parent]] & Stores the object's parent into a variable\\
+[[get_prop]] & Stores the value of the object's property into a variable\\
+[[get_prop_addr]] & Stores the address of the object's property into a variable\\
+[[get_prop_len]] & Stores the byte length of the object's property into a variable\\
+[[get_sibling]] & Stores the next sibling of the object into a variable\\
+[[insert_obj]] & Reparents the object to the destination object\\
+[[put_prop]] & Stores the value into the object's property\\
+[[remove_obj]] & Detaches the object from its parent\\
+[[set_attr]] & Sets an object's attribute\\
+\cmidrule{1-2}
+\multicolumn{2}{c}{\thead{Other instructions}}\\
+\cmidrule{1-2}
+[[nop]] & Does nothing\\
+[[restart]] & Restarts the game\\
+[[restore]] & Loads a saved game\\
+[[quit]] & Quits the game\\
+[[save]] & Saves the game\\
+[[sread]] & Reads from the keyboard\\
+\bottomrule
+\end{tabularx}
+\normalsize
+
+\section{Instruction utilities}
+
+There are a few utilities that are used in common by instructions.
+
+[[illegal_opcode]] hits a [[BRK]] instruction.
+
+<<Instruction illegal opcode>>=
+instr_illegal_opcode:
+    SUBROUTINE
+
+    JSR      brk
+@ %def illegal_opcode
+
+
+The [[store_zero_and_next]] routine stores the value [[0]] into the variable in the next byte, while
+[[store_A_and_next]] stores the value in the [[A]] register into the variable in in
+the next byte. Finally, [[store_and_next]] stores the value in [[SCRATCH2]] into the
+variable in the next byte.
+
+<<Store and go to next instruction>>=
+store_zero_and_next:
+    SUBROUTINE
+
+    LDA      #$00
+
+store_A_and_next:
+    SUBROUTINE
+
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+
+store_and_next:
+    SUBROUTINE
+
+    JSR      store_var
+    JMP      do_instruction
+@ %def store_zero_and_next store_A_and_next store_and_next
+
+The [[print_zstring_and_next]] routine prints the z-encoded string at [[Z_PC2]]
+to the screen, and then goes to the next instruction.
+
+<<Print zstring and go to next instruction>>=
+print_zstring_and_next:
+    SUBROUTINE
+
+    JSR      print_zstring
+    JMP      do_instruction
+@ %def print_zstring_and_next
+
+The [[inc_var]] routine increments the variable in [[OPERAND0]], and also stores the result
+in [[SCRATCH2]].
+
+<<Increment variable>>=
+inc_var:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      var_get
+    INCW     SCRATCH2
+inc_var_continue:
+    PSHW     SCRATCH2
+    LDA      OPERAND0
+    JSR      var_put
+    PULW     SCRATCH2
+    RTS
+@ %def inc_var
+
+[[dec_var]] does the same thing as [[inc_var]], except does a decrement.
+
+<<Decrement variable>>=
+dec_var:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      var_get
+    SUBB     SCRATCH2, #$01
+    JMP      inc_var_continue
+@ %def dec_var
+
+\subsection{Handling branches}
+
+Branch information is stored in one or two bytes, indicating what to do with
+the result of the test. If bit [[7]] of the first byte is [[0]], a branch occurs when the
+condition was false; if [[1]], then branch is on true.
+
+There are two entry points here, [[branch]] and [[negated_branch]], which are used when
+the branch condition previously checked is true and false, respectively.
+
+[[branch]] checks if bit [[7]] of the offset data is clear, and if so, does the
+branch, otherwise skips to the next instruction.
+
+[[negated_branch]] is the same, except that it inverts the branch condition.
+
+<<Handle branch>>=
+negated_branch:
+    SUBROUTINE
+
+    JSR      get_next_code_byte
+    ORA      #$00
+    BMI      .do_branch
+    BPL      .no_branch
+
+branch:
+    JSR      get_next_code_byte
+    ORA      #$00
+    BPL      .do_branch
+@ %def negated_branch branch
+
+If we're not branching, we check whether bit [[6]] is set. If so, we need to read the
+second byte of the offset data and throw it away. In either case, we go to the next instruction.
+
+<<Handle branch>>=
+.no_branch:
+    AND      #$40
+    BNE      .next
+    JSR      get_next_code_byte
+
+.next:
+    JMP      do_instruction
+@
+
+With the first byte of the branch offset data in the [[A]] register, we check whether
+bit [[6]] is set. If so, the offset is (unsigned) 6 bits and we can move on, otherwise
+we need to tack on the next byte for a signed 14-bit offset. When we're done, [[SCRATCH2]]
+will contain the signed offset.
+
+<<Handle branch>>=
+.do_branch:
+    TAX
+    AND      #$40
+    BEQ      .get_14_bit_offset
+
+.offset_is_6_bits:
+    TXA
+    AND      #$3F
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+    JMP      .check_for_return_false
+
+.get_14_bit_offset:
+    TXA
+    AND      #$3F
+    PHA
+    JSR      get_next_code_byte
+    STA      SCRATCH2
+    PLA
+    STA      SCRATCH2+1
+    AND      #$20
+    BEQ      .check_for_return_false
+    LDA      SCRATCH2+1
+    ORA      #$C0
+    STA      SCRATCH2+1
+@
+
+An offset of [[0]] always means to return false from the current routine, while an offset of [[1]]
+means to return true. Otherwise, we fall through.
+
+<<Handle branch>>=
+.check_for_return_false:
+    LDA      SCRATCH2+1
+    ORA      SCRATCH2
+    BEQ      instr_rfalse
+    LDA      SCRATCH2
+    SEC
+    SBC      #$01
+    STA      SCRATCH2
+    BCS      .check_for_return_true
+    DEC      SCRATCH2+1
+
+.check_for_return_true:
+    LDA      SCRATCH2+1
+    ORA      SCRATCH2
+    BEQ      instr_rtrue
+@
+
+We now need to move execution to the instruction at address [[Address after branch data + offset - 2]].
+
+We subtract [[1]] from the offset in [[SCRATCH2]]. Note that above, we've already subtracted
+[[1]], so now we've subtracted [[2]] from the offset.
+
+<<Handle branch>>=
+branch_to_offset:
+    SUBROUTINE
+
+    SUBB     SCRATCH2, #$01
+@ %def branch_to_offset
+
+Next, we store twice the high byte of [[SCRATCH2]] into [[SCRATCH1]].
+
+<<Handle branch>>=
+    LDA      SCRATCH2+1
+    STA      SCRATCH1
+    ASL      A
+    LDA      #$00
+    ROL      A
+    STA      SCRATCH1+1
+@
+
+Finally, we add the signed 16-bit [[SCRATCH2]] to the 24-bit [[Z_PC]], and go to the next instruction.
+We invalidate the zcode page if we've passed a page boundary.
+
+Interestingly, although [[Z_PC]] is a 24-bit address, we [[AND]] the high byte with [[#$01]], meaning
+that the maximum [[Z_PC]] would be [[#$01FFFF]].
+
+<<Handle branch>>=
+    LDA      Z_PC
+    CLC
+    ADC      SCRATCH2
+    BCC      .continue2
+    INC      SCRATCH1
+    BNE      .continue2
+    INC      SCRATCH1+1
+
+.continue2:
+    STA      Z_PC
+    LDA      SCRATCH1+1
+    ORA      SCRATCH1
+    BEQ      .next
+
+    CLC
+    LDA      SCRATCH1
+    ADC      Z_PC+1
+    STA      Z_PC+1
+    LDA      SCRATCH1+1
+    ADC      Z_PC+2
+    AND      #$01
+    STA      Z_PC+2
+    LDA      #$00
+    STA      ZCODE_PAGE_VALID
+    JMP      do_instruction
+
+.next:
+    JMP      do_instruction
+@
+
+
+\section{Data movement instructions}
+
+\subsection{load}
+
+[[load]] loads the variable in the operand into the variable in the next code byte.
+
+<<Instruction load>>=
+instr_load:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      var_get
+    JMP      store_and_next
+@ %def instr_load
+
+
+\subsection{loadw}
+
+[[loadw]] loads a word from the array at the address given [[OPERAND0]], indexed
+by [[OPERAND1]], into the variable in the next code byte.
+
+<<Instruction loadw>>=
+instr_loadw:
+    SUBROUTINE
+
+    ASL      OPERAND1               ; OPERAND1 *= 2
+    ROL      OPERAND1+1
+    ADDW     OPERAND1, OPERAND0, SCRATCH2
+    JSR      load_address
+    JSR      get_next_code_word
+    JMP      store_and_next
+@ %def instr_loadw
+
+\subsection{loadb}
+
+[[loadb]] loads a zero-extended byte from the array at the address given [[OPERAND0]], indexed
+by [[OPERAND1]], into the variable in the next code byte.
+
+<<Instruction loadb>>=
+instr_loadb:
+    SUBROUTINE
+
+    ADDW     OPERAND1, OPERAND0, SCRATCH2   ; SCRATCH2 = OPERAND0 + OPERAND1
+    JSR      load_address                   ; Z_PC2 = SCRATCH2
+    JSR      get_next_code_byte2            ; A = *Z_PC2
+    STA      SCRATCH2                       ; SCRATCH2 = uint16(A)
+    LDA      #$00
+    STA      SCRATCH2+1
+    JMP      store_and_next                 ; store_and_next(SCRATCH2)
+@ %def instr_loadb
+
+\subsection{store}
+
+[[store]] stores [[OPERAND1]] into the variable in [[OPERAND0]].
+
+<<Instruction store>>=
+instr_store:
+    SUBROUTINE
+
+    MOVW     OPERAND1, SCRATCH2
+    LDA      OPERAND0
+
+stretch_var_put:
+    JSR      var_put
+    JMP      do_instruction
+@ %def instr_store stretch_var_put
+
+\subsection{storew}
+
+[[storew]] stores [[OPERAND2]] into the word array pointed to by z-address [[OPERAND0]]
+at the index [[OPERAND1]].
+
+<<Instruction storew>>=
+instr_storew:
+    SUBROUTINE
+
+    LDA      OPERAND1       ; SCRATCH2 = Z_HEADER_ADDR + OPERAND0 + 2*OPERAND1
+    ASL      A
+    ROL      OPERAND1+1
+    CLC
+    ADC      OPERAND0
+    STA      SCRATCH2
+    LDA      OPERAND1+1
+    ADC      OPERAND0+1
+    STA      SCRATCH2+1
+    ADDW     SCRATCH2, Z_HEADER_ADDR, SCRATCH2
+    LDY      #$00
+    LDA      OPERAND2+1
+    STA      (SCRATCH2),Y
+    INY
+    LDA      OPERAND2
+    STA      (SCRATCH2),Y
+    JMP      do_instruction
+@ %def instr_storew
+
+\subsection{storeb}
+
+[[storeb]] stores the low byte of [[OPERAND2]] into the byte array pointed to by z-address [[OPERAND0]]
+at the index [[OPERAND1]].
+
+<<Instruction storeb>>=
+instr_storeb:
+    SUBROUTINE
+
+    LDA      OPERAND1       ; SCRATCH2 = Z_HEADER_ADDR + OPERAND0 + OPERAND1
+    CLC
+    ADC      OPERAND0
+    STA      SCRATCH2
+    LDA      OPERAND1+1
+    ADC      OPERAND0+1
+    STA      SCRATCH2+1
+    ADDW     SCRATCH2, Z_HEADER_ADDR, SCRATCH2
+    LDY      #$00
+    LDA      OPERAND2
+    STA      (SCRATCH2),Y
+    JMP      do_instruction
+@ %def instr_storeb
+
+\section{Stack instructions}
+
+\subsection{pop}
+
+[[pop]] pops the stack. This throws away the popped value.
+
+<<Instruction pop>>=
+instr_pop:
+    SUBROUTINE
+
+    JSR      pop
+    JMP      do_instruction
+@ %def instr_pop
+
+\subsection{pull}
+
+[[pull]] pops the top value off the stack and puts it in the variable in [[OPERAND0]].
+
+<<Instruction pull>>=
+instr_pull:
+    SUBROUTINE
+
+    JSR      pop
+    LDA      OPERAND0
+    JMP      stretch_var_put
+@ %def instr_pull
+
+\subsection{push}
+
+[[push]] pushes the value in [[OPERAND0]] onto the z-stack.
+
+<<Instruction push>>=
+instr_push:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    JSR      push
+    JMP      do_instruction
+@ %def instr_push
+
+\section{Decrements and increments}
+
+\subsection{inc}
+
+[[inc]] increments the variable in the operand.
+
+<<Instruction inc>>=
+instr_inc:
+    SUBROUTINE
+
+    JSR      inc_var
+    JMP      do_instruction
+@ %def instr_inc
+
+\subsection{dec}
+
+[[dec]] decrements the variable in the operand.
+
+<<Instruction dec>>=
+instr_dec:
+    SUBROUTINE
+
+    JSR      dec_var
+    JMP      do_instruction
+@ %def instr_dec
+
+\section{Arithmetic instructions}
+
+\subsection{add}
+
+[[add]] adds the first operand to the second operand and stores the result in the variable in the next code byte.
+
+<<Instruction add>>=
+instr_add:
+    SUBROUTINE
+
+    ADDW     OPERAND0, OPERAND1, SCRATCH2
+    JMP      store_and_next
+@ %def instr_add
+
+\subsection{div}
+
+[[div]] divides the first operand by the second operand and stores the result in the variable in the next code byte. There are optimizations for dividing by [[2]] and [[4]] (which are just shifts). For all other divides, [[divu16]] is called, and then the sign is adjusted afterwards.
+
+<<Instruction div>>=
+instr_div:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    MOVW     OPERAND1, SCRATCH1
+    JSR      check_sign
+    LDA      SCRATCH1+1
+    BNE      .do_div
+    LDA      SCRATCH1
+    CMP      #$02
+    BEQ      .shortcut_div2
+    CMP      #$04
+    BEQ      .shortcut_div4
+
+.do_div:
+    JSR      divu16
+    JMP      stretch_set_sign
+
+.shortcut_div4:
+    LSR      SCRATCH2+1
+    ROR      SCRATCH2
+
+.shortcut_div2:
+    LSR      SCRATCH2+1
+    ROR      SCRATCH2
+    JMP      stretch_set_sign
+@ %def instr_div
+
+
+\subsection{mod}
+
+[[mod]] divides the first operand by the second operand and stores the remainder in the variable in the next code byte. There are optimizations for dividing by [[2]] and [[4]] (which are just shifts). For all other divides, [[divu16]] is called, and then the sign is adjusted afterwards.
+
+<<Instruction mod>>=
+instr_mod:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    MOVW     OPERAND1, SCRATCH1
+    JSR      check_sign
+    JSR      divu16
+    MOVW     SCRATCH1, SCRATCH2
+    JMP      store_and_next
+@ %def instr_mod
+
+\subsection{mul}
+
+[[mul]] multiplies the first operand by the second operand and stores the result in the variable in the next code byte. There are optimizations for multiplying by [[2]] and [[4]] (which are just shifts). For all other multiplies, [[mulu16]] is called, and then the sign is adjusted afterwards.
+
+<<Instruction mul>>=
+instr_mul:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    MOVW     OPERAND1, SCRATCH1
+    JSR      check_sign
+    LDA      SCRATCH1+1
+    BNE      .do_mult
+    LDA      SCRATCH1
+    CMP      #$02
+    BEQ      .shortcut_x2
+    CMP      #$04
+    BEQ      .shortcut_x4
+
+.do_mult:
+    JSR      mulu16
+
+stretch_set_sign:
+    JSR      set_sign
+    JMP      store_and_next
+
+.shortcut_x4:
+    ASL      SCRATCH2
+    ROL      SCRATCH2+1
+
+.shortcut_x2:
+    ASL      SCRATCH2
+    ROL      SCRATCH2+1
+    JMP      stretch_set_sign
+@ %def instr_mul
+
+\subsection{random}
+
+[[random]] gets a random number between 1 and [[OPERAND0]].
+
+<<Instruction random>>=
+instr_random:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH1
+    JSR      get_random
+    JSR      divu16
+    MOVW     SCRATCH1, SCRATCH2
+    INCW     SCRATCH2
+    JMP      store_and_next
+@ %def instr_random
+
+\subsection{sub}
+
+[[sub]] subtracts the first operand from the second operand and stores the result in the variable in the next code byte.
+
+<<Instruction sub>>=
+instr_sub:
+    SUBROUTINE
+
+    SUBW     OPERAND1, OPERAND0, SCRATCH2
+    JMP      store_and_next
+@ %def instr_sub
+
+
+\section{Logical instructions}
+
+\subsection{and}
+
+[[and]] bitwise-ands the first operand with the second operand and stores the result in the
+variable given by the next code byte.
+
+<<Instruction and>>=
+instr_and:
+    SUBROUTINE
+
+    LDA      OPERAND1+1
+    AND      OPERAND0+1
+    STA      SCRATCH2+1
+    LDA      OPERAND1
+    AND      OPERAND0
+    STA      SCRATCH2
+    JMP      store_and_next
+@ %def instr_and
+
+\subsection{not}
+
+[[not]] flips every bit in the variable in the operand and stores it in the variable in the next code byte.
+
+<<Instruction not>>=
+instr_not:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    EOR      #$FF
+    STA      SCRATCH2
+    LDA      OPERAND0+1
+    EOR      #$FF
+    STA      SCRATCH2+1
+    JMP      store_and_next
+@ %def instr_not
+
+\subsection{or}
+
+[[or]] bitwise-ors the first operand with the second operand and stores the result in the
+variable given by the next code byte.
+
+<<Instruction or>>=
+instr_or:
+    SUBROUTINE
+
+    LDA      OPERAND1+1
+    ORA      OPERAND0+1
+    STA      SCRATCH2+1
+    LDA      OPERAND1
+    ORA      OPERAND0
+    STA      SCRATCH2
+    JMP      store_and_next
+@ %def instr_or
+
+
+\section{Conditional branch instructions}
+
+\subsection{dec\_chk}
+
+[[dec_chk]] decrements the variable in the first operand, and then jumps if it is less than the second operand.
+
+<<Instruction dec chk>>=
+instr_dec_chk:
+    SUBROUTINE
+
+    JSR      dec_var
+    MOVW     OPERAND1, SCRATCH1
+    JMP      do_chk
+@ %def instr_dec_chk
+
+\subsection{inc\_chk}
+
+[[inc_chk]] increments the variable in the first operand, and then jumps if it is greater than the second operand.
+
+<<Instruction inc chk>>=
+instr_inc_chk:
+    JSR      inc_var
+    MOVW     SCRATCH2, SCRATCH1
+    MOVW     OPERAND1, SCRATCH2
+
+do_chk:
+    JSR      cmp16
+    BCC      stretch_to_branch
+    JMP      negated_branch
+
+stretch_to_branch:
+    JMP      branch
+@ %def instr_inc_chk do_chk stretch_to_branch
+
+
+\subsection{je}
+
+[[je]] jumps if the first operand is equal to any of the next operands. However, in
+negative node ([[jne]]), we jump if the first operand is not equal to any of the next
+operands.
+
+First, we check that there is at least one operand, and if not, we hit a [[BRK]].
+
+<<Instruction je>>=
+instr_je:
+    SUBROUTINE
+
+    LDX      OPERAND_COUNT
+    DEX
+    BNE      .check_second
+    JSR      brk
+@ %def instr_je
+
+Next, we check against the second operand, and if it's equal, we branch, and if that was the last
+operand, we negative branch.
+
+<<Instruction je>>=
+.check_second:
+    LDA      OPERAND0
+    CMP      OPERAND1
+    BNE      .check_next
+    LDA      OPERAND0+1
+    CMP      OPERAND1+1
+    BEQ      .branch
+
+.check_next:
+    DEX
+    BEQ      .neg_branch
+@
+
+Next we do the same with the third operand.
+
+<<Instruction je>>=
+    LDA      OPERAND0
+    CMP      OPERAND0+4
+    BNE      .check_next2
+    LDA      OPERAND0+1
+    CMP      OPERAND0+5
+    BEQ      .branch
+
+.check_next2:
+    DEX
+    BEQ      .neg_branch
+@
+
+And again with the fourth operand.
+
+<<Instruction je>>=
+    LDA      OPERAND0
+    CMP      OPERAND0+6
+    BNE      .check_second      ; why not just go to .neg_branch?
+    LDA      OPERAND0+1
+    CMP      OPERAND0+7
+    BEQ      .branch
+
+.neg_branch:
+    JMP      negated_branch
+
+.branch:
+    JMP      branch
+@
+
+\subsection{jg}
+
+[[jg]] jumps if the first operand is greater than the second operand, in a signed comparison. In negative mode ([[jle]]), we jump if the first operand is less than or equal to the second operand.
+
+<<Instruction jg>>=
+instr_jg:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH1
+    MOVW     OPERAND1, SCRATCH2
+    JSR      cmp16
+    BCC      stretch_to_branch
+    JMP      negated_branch
+@ %def instr_jg
+
+
+\subsection{jin}
+
+[[jin]] jumps if the first operand is a child object of the second operand.
+
+<<Instruction jin>>=
+instr_jin:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      get_object_addr
+    LDY      #OBJECT_PARENT_OFFSET
+    LDA      OPERAND1
+    CMP      (SCRATCH2),Y
+    BEQ      stretch_to_branch
+    JMP      negated_branch
+@ %def instr_jin
+
+\subsection{jl}
+
+[[jl]] jumps if the first operand is less than the second operand, in a signed comparison. In negative mode ([[jge]]), we jump if the first operand is greater than or equal to the second operand.
+
+<<Instruction jl>>=
+instr_jl:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    MOVW     OPERAND1, SCRATCH1
+    JSR      cmp16
+    BCC      stretch_to_branch
+    JMP      negated_branch
+@ %def instr_jl
+
+\subsection{jz}
+
+[[jz]] jumps if its operand is [[0]].
+
+This also includes a ``stretchy jump'' for other instructions that need to branch.
+
+<<Instruction jz>>=
+instr_jz:
+    SUBROUTINE
+
+    LDA      OPERAND0+1
+    ORA      OPERAND0
+    BEQ      take_branch
+    JMP      negated_branch
+
+take_branch:
+    JMP      branch
+@ %def instr_jz take_branch
+
+\subsection{test}
+
+[[test]] jumps if all the bits in the first operand are set in the second operand.
+
+<<Instruction test>>=
+instr_test:
+    SUBROUTINE
+
+    MOVB     OPERAND1+1, SCRATCH2+1
+    AND      OPERAND0+1
+    STA      SCRATCH1+1
+    MOVB     OPERAND1, SCRATCH2
+    AND      OPERAND0
+    STA      SCRATCH1
+    JSR      cmpu16
+    BEQ      stretch_to_branch
+    JMP      negated_branch
+@ %def instr_test
+
+\subsection{test\_attr}
+
+[[test_attr]] jumps if the object in the first operand has the attribute number in the second operand set.
+This is done by getting the attribute word and mask for the attribute number, and then bitwise-anding
+them together. If the result is nonzero, the attribute is set.
+
+<<Instruction test attr>>=
+instr_test_attr:
+    SUBROUTINE
+
+    JSR      attr_ptr_and_mask
+    LDA      SCRATCH1+1
+    AND      SCRATCH3+1
+    STA      SCRATCH1+1
+    LDA      SCRATCH1
+    AND      SCRATCH3
+    ORA      SCRATCH1+1
+    BNE      stretch_to_branch
+    JMP      negated_branch
+@ %def instr_test_attr
+
+\section{Jump and subroutine instructions}
+
+\subsection{call}
+
+[[call]] calls the routine at the given address.This instruction
+has been described in \nameref{sec:call}.
+
+\subsection{jump}
+
+[[jump]] jumps relative to the signed operand. We subtract [[1]] from the operand so that we can call [[branch_to_offset]], which does another decrement. Thus, the address to go to is the address after this instruction, plus the operand, minus 2.
+
+<<Instruction jump>>=
+instr_jump:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    SUBB     SCRATCH2, #$01
+    JMP      branch_to_offset
+@ %def instr_jump
+
+\subsection{print\_ret}
+
+[[print_ret]] is the same as [[print]], except that it prints a [[CRLF]] after the
+string, and then calls the [[rtrue]] instruction.
+
+<<Instruction print ret>>=
+instr_print_ret:
+    SUBROUTINE
+
+    JSR      print_string_literal
+    LDA      #$0D
+    JSR      buffer_char
+    LDA      #$0A
+    JSR      buffer_char
+    JMP      instr_rtrue
+@ %def instr_print_ret
+
+\subsection{ret}
+
+[[ret]] returns from a routine. The operand is the return value. This instruction
+has been described in \nameref{sec:return}.
+
+\subsection{ret\_popped}
+
+[[ret_popped]] pops the stack and returns that value.
+
+<<Instruction ret popped>>=
+instr_ret_popped:
+    SUBROUTINE
+
+    JSR      pop
+    MOVW     SCRATCH2, OPERAND0
+    JMP      instr_ret
+@ %def instr_ret_popped
+
+\subsection{rfalse}
+
+[[rfalse]] places [[#$0000]] into [[OPERAND0]], and then calls the [[ret]] instruction.
+
+<<Instruction rfalse>>=
+instr_rfalse:
+    SUBROUTINE
+
+    LDA      #$00
+    JMP      ret_a
+@ %def instr_rfalse
+
+\subsection{rtrue}
+
+[[rtrue]] places [[#$0001]] into [[OPERAND0]], and then calls the [[ret]] instruction.
+
+<<Instruction rtrue>>=
+instr_rtrue:
+    SUBROUTINE
+
+    LDA      #$01
+ret_a:
+    STA      OPERAND0
+    LDA      #$00
+    STA      OPERAND0+1
+    JMP      instr_ret
+@ %def instr_rtrue ret_a
+
+
+
+\section{Print instructions}
+
+\subsection{new\_line}
+
+[[new_line]] prints [[CRLF]].
+
+<<Instruction new line>>=
+instr_new_line:
+    SUBROUTINE
+
+    LDA      #$0D
+    JSR      buffer_char
+    LDA      #$0A
+    JSR      buffer_char
+    JMP      do_instruction
+@ %def instr_new_line
+
+\subsection{print}
+
+[[print]] treats the following bytes of z-code as a z-encoded string, and prints
+it to the output.
+
+<<Instruction print>>=
+instr_print:
+    SUBROUTINE
+
+    JSR      print_literal_string
+    JMP      do_instruction
+@ %def instr_print
+
+\subsection{print\_addr}
+
+[[print_addr]] prints the z-encoded string at the address given by the operand.
+
+<<Instruction print addr>>=
+instr_print_addr:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    JSR      load_address
+    JMP      print_zstring_and_next
+@ %def instr_print_addr
+
+\subsection{print\_char}
+
+[[print_char]] prints the one-byte ASCII character in [[OPERAND0]].
+
+<<Instruction print char>>=
+instr_print_char:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      buffer_char
+    JMP      do_instruction
+@ %def instr_print_char
+
+\subsection{print\_num}
+
+[[print_num]] prints the 16-bit signed value in [[OPERAND0]] as a decimal number.
+
+<<Instruction print num>>=
+instr_print_num:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2
+    JSR      print_number
+    JMP      do_instruction
+@ %def instr_print_num
+
+\subsection{print\_obj}
+
+[[print_obj]] prints the short name of the object in the operand.
+
+<<Instruction print obj>>=
+instr_print_obj:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      print_obj_in_A
+    JMP      do_instruction
+@ %def instr_print_obj
+
+\subsection{print\_paddr}
+
+[[print_paddr]] prints the z-encoded string at the packed address in the operand.
+
+<<Instruction print paddr>>=
+instr_print_paddr:
+    SUBROUTINE
+
+    MOVW     OPERAND0, SCRATCH2     ; Z_PC2 <- OPERAND0 * 2
+    JSR      load_packed_address
+
+    ; Falls through to print_zstring_and_next
+@ %def instr_print_paddr
+
+\section{Object instructions}
+
+\subsection{clear\_attr}
+
+[[clear_attr]] clears the attribute number in the second operand for the object in the first operand.
+This is done by getting the attribute word and mask for the attribute number, and then bitwise-anding
+the inverse of the mask with the attribute word, and storing the result.
+
+<<Instruction clear attr>>=
+instr_clear_attr:
+    SUBROUTINE
+
+    JSR      attr_ptr_and_mask
+    LDY      #$01
+    LDA      SCRATCH3
+    EOR      #$FF
+    AND      SCRATCH1
+    STA      (SCRATCH2),Y
+    DEY
+    LDA      SCRATCH3+1
+    EOR      #$FF
+    AND      SCRATCH1+1
+    STA      (SCRATCH2),Y
+    JMP      do_instruction
+@ %def instr_clear_attr
+
+\subsection{get\_child}
+
+[[get_child]] gets the first child object of the object in the operand, stores it into
+the variable in the next code byte, and branches if it exists (i.e. is not [[0]]).
+
+<<Instruction get child>>=
+instr_get_child:
+    LDA      OPERAND0
+    JSR      get_object_addr
+    LDY      #OBJECT_CHILD_OFFSET
+
+push_and_check_obj:
+    LDA      (SCRATCH2),Y
+    PHA
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+    JSR      store_var    ; store in var of next code byte.
+    PLA
+    ORA      #$00
+    BNE      take_branch
+    JMP      negated_branch
+@ %def push_and_check_obj
+
+\subsection{get\_next\_prop}
+
+[[get_next_prop]] gets the next property number for the object in the first operand after the property number in the second operand, and stores it in the variable in the next code byte. If there is no next property, zero is stored.
+
+If the property number in the second operand is zero, the first property number of the object is returned.
+
+<<Instruction get next prop>>=
+instr_get_next_prop:
+    SUBROUTINE
+
+    JSR      get_property_ptr
+    LDA      OPERAND1
+    BEQ      .store
+
+.loop:
+    JSR      get_property_num
+    CMP      OPERAND1
+    BEQ      .found
+    BCS      .continue
+    JMP      store_zero_and_next
+
+.continue:
+    JSR      next_property
+    JMP      .loop
+
+.store:
+    JSR      get_property_num
+    JMP      store_A_and_next
+
+.found:
+    JSR      next_property
+    JMP      .store
+@ %def instr_get_next_prop
+
+\subsection{get\_parent}
+
+[[get_parent]] gets the parent object of the object in the operand, and stores it into
+the variable in the next code byte.
+
+<<Instruction get parent>>=
+instr_get_parent:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      get_object_addr
+    LDY      #OBJECT_PARENT_OFFSET
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+    JSR      store_and_next
+@ %def instr_get_parent
+
+\subsection{get\_prop}
+
+[[get_prop]] gets the property number in the second operand for the object in the first operand, and
+stores the value of the property in the variable in the next code byte. If
+the object doesn't have the property, the default value for the property is used. If the property
+length is 1, then the byte is zero-extended and stored. If the property length is 2, then the entire
+word is stored. If the property length is anything else, we hit a [[BRK]].
+
+First, we check to see if the property is in the object's properties.
+
+<<Instruction get prop>>=
+instr_get_prop:
+    SUBROUTINE
+
+    JSR      get_property_ptr
+
+.loop:
+    JSR      get_property_num
+    CMP      OPERAND1
+    BEQ      .found
+    BCC      .get_default
+    JSR      next_property
+    JMP      .loop
+@ %def instr_get_prop
+
+To get the default value, we look in the beginning of the object table, and index
+into the word containing the property default. Then we store it and we're done.
+
+<<Instruction get prop>>=
+.get_default:
+    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
+    CLC
+    LDA      (Z_HEADER_ADDR),Y
+    ADC      Z_HEADER_ADDR
+    STA      SCRATCH1
+    DEY
+    LDA      (Z_HEADER_ADDR),Y
+    ADC      Z_HEADER_ADDR+1
+    STA      SCRATCH1+1             ; table_ptr
+    LDA      OPERAND1               ; SCRATCH2 <- table_ptr[2*OPERAND1]
+    ASL      A
+    TAY
+    DEY
+    LDA      (SCRATCH1),Y
+    STA      SCRATCH2
+    DEY
+    LDA      (SCRATCH1),Y
+    STA      SCRATCH2+1
+    JMP      store_and_next
+@
+
+If the property was found, we load the zero-extended byte or the word, depending on the property length.
+Also if the property length is not valid, we hit a [[BRK]].
+
+<<Instruction get prop>>=
+.found:
+    JSR      get_property_len
+    INY
+    CMP      #$00
+    BEQ      .byte_prop
+    CMP      #$01
+    BEQ      .word_prop
+    JSR      brk
+
+.word_prop:
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1+1
+    INY
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH1
+    MOVW     SCRATCH1, SCRATCH2
+    JMP      store_and_next
+
+.byte_prop:
+    LDA      (SCRATCH2),Y
+    STA      SCRATCH2
+    LDA      #$00
+    STA      SCRATCH2+1
+    JMP      store_and_next
+@
+
+\subsection{get\_prop\_addr}
+
+[[get_prop_addr]] gets the Z-address of the property number in the
+second operand for the object in the first operand, and stores it
+in the variable in the next code byte. If the object does not have
+the property, zero is stored.
+
+<<Instruction get prop addr>>=
+instr_get_prop_addr:
+    SUBROUTINE
+
+    JSR      get_property_ptr
+
+.loop:
+    JSR      get_property_num
+    CMP      OPERAND1
+    BEQ      .found
+    BCS      .next
+    JMP      store_zero_and_next
+
+.next:
+    JSR      next_property
+    JMP      .loop
+
+.found:
+    INCW     SCRATCH2
+    CLC
+    TYA
+    ADDAC    SCRATCH2
+    SUBW     SCRATCH2, Z_HEADER_ADDR, SCRATCH2
+    JMP      store_and_next
+@ %def instr_get_prop_addr
+
+\subsection{get\_prop\_len}
+
+[[get_prop_len]] gets the length of the property data for the property address in the operand,
+and stores it into the variable in the next code byte. The address in the operand is
+relative to the start of the header, and points to the property data. The property's one-byte
+length is stored at that address minus one.
+
+<<Instruction get prop len>>=
+instr_get_prop_len:
+    CLC
+    LDA      OPERAND0
+    ADC      Z_HEADER_ADDR
+    STA      SCRATCH2
+    LDA      OPERAND0+1
+    ADC      Z_HEADER_ADDR+1
+    STA      SCRATCH2+1
+    LDA      SCRATCH2
+    SEC
+    SBC      #$01
+    STA      SCRATCH2
+    BCS      .continue
+    DEC      SCRATCH2+1
+
+.continue:
+    LDY      #$00
+    JSR      get_property_len
+    CLC
+    ADC      #$01
+    JMP      store_A_and_next
+@ %def instr_get_prop_len
+
+\subsection{get\_sibling}
+
+[[get_sibling]] gets the next object of the object in the operand (its ``sibling''), stores it into
+the variable in the next code byte, and branches if it exists (i.e. is not [[0]]).
+
+<<Instruction get sibling>>=
+instr_get_sibling:
+    SUBROUTINE
+
+    LDA      OPERAND0
+    JSR      get_object_addr
+    LDY      #OBJECT_SIBLING_OFFSET
+    JMP      push_and_check_obj
+@ %def instr_get_sibling
+
+
+\subsection{insert\_obj}
+
+[[insert_obj]] inserts the object in [[OPERAND0]] as a child of the object in [[OPERAND1}]]. It
+becomes the first child in the object.
+
+<<Instruction insert obj>>=
+instr_insert_obj:
+    JSR      remove_obj             ; remove_obj<OPERAND0>
+    LDA      OPERAND0
+    JSR      get_object_addr        ; obj_ptr = get_object_addr<OPERAND0>
+    PSHW     SCRATCH2
+    LDY      #OBJECT_PARENT_OFFSET
+    LDA      OPERAND1
+    STA      (SCRATCH2),Y           ; obj_ptr->parent = OPERAND1
+    JSR      get_object_addr        ; dest_ptr = get_object_addr<OPERAND1>
+    LDY      #OBJECT_CHILD_OFFSET   ; tmp = dest_ptr->child
+    LDA      (SCRATCH2),Y
+    TAX
+    LDA      OPERAND0               ; dest_ptr->child = OPERAND0
+    STA      (SCRATCH2),Y
+    PULW     SCRATCH2
+    TXA
+    BEQ      .continue
+    LDY      #OBJECT_SIBLING_OFFSET ; obj_ptr->sibling = tmp
+    STA      (SCRATCH2),Y
+
+.continue:
+    JMP      do_instruction
+@ %def instr_insert_obj
+
+\subsection{put\_prop}
+
+[[put_prop]] stores the value in [[OPERAND2]] into property number [[OPERAND1]] in object [[OPERAND0]]. The property must exist, and must be of length 1 or 2, otherwise a [[BRK]] is hit.
+
+<<Instruction put prop>>=
+instr_put_prop:
+    SUBROUTINE
+
+    JSR      get_property_ptr
+
+.loop:
+    JSR      get_property_num
+    CMP      OPERAND1
+    BEQ      .found
+    BCS      .continue
+    JSR      brk
+
+.continue:
+    JSR      next_property
+    JMP      .loop
+
+.found:
+    JSR      get_property_len
+    INY
+    CMP      #$00
+    BEQ      .byte_property
+    CMP      #$01
+    BEQ      .word_property
+    JSR      brk
+
+.word_property:
+    LDA      OPERAND2+1
+    STA      (SCRATCH2),Y
+    INY
+    LDA      OPERAND2
+    STA      (SCRATCH2),Y
+    JMP      do_instruction
+
+.byte_property:
+    LDA      OPERAND2
+    STA      (SCRATCH2),Y
+    JMP      do_instruction
+@ %def instr_put_prop
+
+\subsection{remove\_obj}
+
+[[remove_obj]] removes the object in the operand from the object tree.
+
+<<Instruction remove obj>>=
+instr_remove_obj:
+    SUBROUTINE
+
+    JSR      remove_obj
+    JMP      do_instruction
+@ %def instr_remove_obj
+
+\subsection{set\_attr}
+
+[[set_attr]] sets the attribute number in the second operand for the object in the first operand.
+This is done by getting the attribute word and mask for the attribute number, and then bitwise-oring
+them together, and storing the result.
+
+<<Instruction set attr>>=
+instr_set_attr:
+    SUBROUTINE
+
+    JSR      attr_ptr_and_mask
+    LDY      #$01
+    LDA      SCRATCH1
+    ORA      SCRATCH3
+    STA      (SCRATCH2),Y
+    DEY
+    LDA      SCRATCH1+1
+    ORA      SCRATCH3+1
+    STA      (SCRATCH2),Y
+    JMP      do_instruction
+@ %def instr_set_attr
+
+\section{Other instructions}
+
+\subsection{nop}
+
+[[nop]] does nothing.
+
+<<Instruction nop>>=
+instr_nop:
+    SUBROUTINE
+
+    JMP      do_instruction
+@ %def instr_nop
+
+
+\subsection{restart}
+
+[[restart]] restarts the game. This dumps the buffer, and then jumps back to
+[[main]].
+
+<<Instruction restart>>=
+instr_restart:
+    SUBROUTINE
+
+    JSR      dump_buffer_with_more
+    JMP      main
+@ %def instr_restart
+
+\subsection{restore}
+
+[[restore]] restores the game. See the section on restoring the game.
+
+\subsection{quit}
+
+[[quit]] quits the game by printing ``-- END OF SESSION --'' and then spinlooping.
+
+<<Instruction quit>>=
+sEndOfSession:
+    DC       "-- END OF SESSION --"
+
+instr_quit:
+    SUBROUTINE
+
+    JSR      dump_buffer_with_more
+    STOW     sEndOfSession, SCRATCH2
+    LDX      #20
+    JSR      print_ascii_string
+    JSR      dump_buffer_with_more
+
+.spinloop:
+    JMP      .spinloop
+@ %def instr_quit
+
+\subsection{save}
+
+[[save]] saves the game. See the section on saving the game.
+
+\subsection{sread}
+
+[[sread]] reads a line of input from the keyboard and parses it. See the section \nameref{sec:parsing}.
+
+\chapter{The entire program}
+
+<<main.asm>>=
+    PROCESSOR 6502
+
+<<defines>>
+<<routines>>
+@
+
+<<defines>>=
+<<Apple ROM defines>>
+<<Program defines>>
+<<Table offsets>>
+@
+
+<<Apple ROM defines>>=
+WNDLFT      EQU     $20
+WNDWDTH     EQU     $21
+WNDTOP      EQU     $22
+WNDBTM      EQU     $23
+CH          EQU     $24
+CV          EQU     $25
+IWMDATAPTR  EQU     $26     ; IWM pointer to write disk data to
+IWMSLTNDX   EQU     $2B     ; IWM Slot times 16
+INVFLG      EQU     $32
+PROMPT      EQU     $33
+CSW         EQU     $36     ; 2 bytes
+
+; Details https://6502disassembly.com/a2-rom/APPLE2.ROM.html
+IWMSECTOR   EQU     $3D  ; IWM sector to read
+RDSECT_PTR  EQU     $3E  ; 2 bytes
+
+INIT        EQU     $FB2F
+VTAB        EQU     $FC22
+HOME        EQU     $FC58
+CLREOL      EQU     $FC9C
+RDKEY       EQU     $FD0C
+GETLN1      EQU     $FD6F
+COUT        EQU     $FDED
+COUT1       EQU     $FDF0
+SETVID      EQU     $FE93
+SETKBD      EQU     $FE89
+@ %def WNDLFT WNDWDTH WNDTOP WNDBTM CH CV INVFLG PROMPT CSW INIT VTAB HOME CLREOL RDKEY GETLN1 COUT COUT1 SETVID SETKBD IWMSECTOR RDSECT_PTR IWMDATAPTR IWMSLTNDX
+
+<<Program defines>>=
+CURR_OPCODE         EQU     $80
+OPERAND_COUNT       EQU     $81
+OPERAND0            EQU     $82     ; 2 bytes
+OPERAND1            EQU     $84     ; 2 bytes
+OPERAND2            EQU     $86     ; 2 bytes
+OPERAND3            EQU     $88     ; 2 bytes
+Z_PC                EQU     $8A     ; 3 bytes
+ZCODE_PAGE_ADDR     EQU     $8D     ; 2 bytes
+ZCODE_PAGE_VALID    EQU     $8F
+PAGE_TABLE_INDEX    EQU     $90
+Z_PC2_H             EQU     $91
+Z_PC2_HH            EQU     $92
+Z_PC2_L             EQU     $93
+ZCODE_PAGE_ADDR2    EQU     $94     ; 2 bytes
+ZCODE_PAGE_VALID2   EQU     $96
+PAGE_TABLE_INDEX2   EQU     $97
+GLOBAL_ZVARS_ADDR   EQU     $98     ; 2 bytes
+LOCAL_ZVARS         EQU     $9A     ; 30 bytes
+AFTER_Z_IMAGE_ADDR  EQU     $B8
+CURR_DISK_BUFF_ADDR EQU     $BA     ; 2 bytes
+NUM_IMAGE_PAGES     EQU     $BC
+NUM_PAGE_TABLE_ENTRIES  EQU $BD
+LAST_Z_PAGE         EQU     $BF
+PAGE_L_TABLE        EQU     $C0     ; 2 bytes
+PAGE_H_TABLE        EQU     $C2     ; 2 bytes
+NEXT_PAGE_TABLE     EQU     $C4     ; 2 bytes
+PREV_PAGE_TABLE     EQU     $C6     ; 2 bytes
+STACK_COUNT         EQU     $C8
+Z_SP                EQU     $C9     ; 2 bytes
+SHIFT_ALPHABET      EQU     $CE
+LOCKED_ALPHABET     EQU     $CF
+ZDECODE_STATE       EQU     $D0
+ZCHARS_L            EQU     $D1
+ZCHARS_H            EQU     $D2
+ZCHAR_SCRATCH1      EQU     $D3     ; 6 bytes
+ZCHAR_SCRATCH2      EQU     $DA     ; 6 bytes
+TOKEN_INDEX         EQU     $E0
+INPUT_PTR           EQU     $E1
+Z_ABBREV_TABLE      EQU     $E2     ; 2 bytes
+SCRATCH1            EQU     $E4     ; 2 bytes
+SCRATCH2            EQU     $E6     ; 2 bytes
+SCRATCH3            EQU     $E8     ; 2 bytes
+BUFF_END            EQU     $EB
+BUFF_LINE_LEN       EQU     $EC
+CURR_LINE           EQU     $ED
+PRINTER_CSW         EQU     $EE     ; 2 bytes
+TMP_Z_PC            EQU     $F0     ; 3 bytes
+KBD_INPUT_AREA      EQU     $0200
+@ %def CURR_OPCODE OPERAND_COUNT OPERAND0 OPERAND1 OPERAND2 OPERAND3 Z_PC ZCODE_PAGE_ADDR ZCODE_PAGE_VALID PAGE_TABLE_INDEX Z_PC2_H Z_PC2_HH Z_PC2_L ZCODE_PAGE_ADDR2 ZCODE_PAGE_VALID2 PAGE_TABLE_INDEX2 GLOBAL_ZVARS_ADDR LOCAL_ZVARS AFTER_Z_IMAGE_ADDR CURR_DISK_BUFF_ADDR NUM_IMAGE_PAGES NUM_PAGE_TABLE_ENTRIES LAST_Z_PAGE PAGE_L_TABLE PAGE_H_TABLE NEXT_PAGE_TABLE PREV_PAGE_TABLE STACK_COUNT Z_SP SHIFT_ALPHABET LOCKED_ALPHABET ZDECODE_STATE ZCHARS_L ZCHARS_H ZCHAR_SCRATCH1 ZCHAR_SCRATCH2 Z_ABBREV_TABLE SCRATCH1 SCRATCH2 SCRATCH3 BUFF_END BUFF_LINE_LEN CURR_LINE PRINTER_CSW TMP_Z_PC KBD_INPUT_AREA
+
+<<Table offsets>>=
+HEADER_DICT_OFFSET      EQU     $08
+HEADER_OBJECT_TABLE_ADDR_OFFSET  EQU    $0B
+HEADER_FLAGS2_OFFSET    EQU     $10
+FIRST_OBJECT_OFFSET     EQU     $35
+
+OBJECT_PARENT_OFFSET    EQU     $04
+OBJECT_SIBLING_OFFSET   EQU     $05
+OBJECT_CHILD_OFFSET     EQU     $06
+OBJECT_PROPS_OFFSET     EQU     $07
+@ %def HEADER_OBJECT_TABLE_ADDR_OFFSET FHEADER_FLAGS2_OFFSET IRST_OBJECT_OFFSET OBJECT_PARENT_OFFSET OBJECT_SIBLING_OFFSET OBJECT_CHILD_OFFSET OBJECT_PROPS_OFFSET
+
+<<routines>>=
+    ORG      $0800
+
+<<main>>
+
+<<Instruction tables>>
+
+<<Do instruction>>
+<<Get const byte>>
+<<Get const word>>
+<<Get var content in A>>
+<<Store to var A>>
+<<Get var content>>
+<<Store and go to next instruction>>
+<<Store var>>
+<<Handle branch>>
+<<Instruction rtrue>>
+<<Instruction rfalse>>
+<<Instruction print>>
+<<Printing a string literal>>
+<<Instruction print ret>>
+<<Instruction nop>>
+<<Instruction ret popped>>
+<<Instruction pop>>
+<<Instruction new line>>
+<<Instruction jz>>
+<<Instruction get sibling>>
+<<Instruction get child>>
+<<Instruction get parent>>
+<<Instruction get prop len>>
+<<Instruction inc>>
+<<Instruction dec>>
+<<Increment variable>>
+<<Decrement variable>>
+<<Instruction print addr>>
+<<Instruction illegal opcode>>
+<<Instruction remove obj>>
+<<Remove obj>>
+<<Instruction print obj>>
+<<Print object in A>>
+<<Instruction ret>>
+<<Instruction jump>>
+<<Instruction print paddr>>
+<<Print zstring and go to next instruction>>
+<<Instruction load>>
+<<Instruction not>>
+<<Instruction jl>>
+<<Instruction jg>>
+<<Instruction dec chk>>
+<<Instruction inc chk>>
+<<Instruction jin>>
+<<Instruction test>>
+<<Instruction or>>
+<<Instruction and>>
+<<Instruction test attr>>
+<<Instruction set attr>>
+<<Instruction clear attr>>
+<<Instruction store>>
+<<Instruction insert obj>>
+<<Instruction loadw>>
+<<Instruction loadb>>
+<<Instruction get prop>>
+<<Instruction get prop addr>>
+<<Instruction get next prop>>
+<<Instruction add>>
+<<Instruction sub>>
+<<Instruction mul>>
+<<Instruction div>>
+<<Instruction mod>>
+<<Instruction je>>
+<<Instruction call>>
+<<Instruction storew>>
+<<Instruction storeb>>
+<<Instruction put prop>>
+<<Instruction sread>>
+<<Skip separators>>
+<<Separator checks>>
+<<Get dictionary address>>
+<<Match dictionary word>>
+<<Instruction print char>>
+<<Instruction print num>>
+<<Print number>>
+<<Print negative number>>
+<<Instruction random>>
+<<Instruction push>>
+<<Instruction pull>>
+<<mulu16>>
+<<divu16>>
+<<Check sign>>
+<<Set sign>>
+<<negate>>
+<<Flip sign>>
+<<Get attribute pointer and mask>>
+<<Get property pointer>>
+<<Get property number>>
+<<Get property length>>
+<<Next property>>
+<<Get object address>>
+<<cmp16>>
+<<cmpu16>>
+<<Push>>
+<<Pop>>
+<<Get next code byte>>
+<<Load address>>
+<<Load packed address>>
+<<Get next code word>>
+<<Get next code byte 2>>
+<<Adjust page link tables>>
+@
+
+
+
+\chapter{Defined Chunks}\par\noindent
+\nowebchunks
+\chapter{Index}\par\noindent
+\nowebindex
+@
+\end{document}
