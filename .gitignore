@@ -13,13 +13,13 @@ a.out
 *.sym
 *.lis
 
-## tex is now an intermediate document
+## tex is an intermediate document
 *.tex
 
 # Some testing files
 main2.asm
 main2.tex
-output
+output/BOOT1
 apple
 main_orig*
 
