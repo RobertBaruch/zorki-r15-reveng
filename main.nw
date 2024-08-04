@@ -94,7 +94,11 @@ disk image.
 
 The code was reverse-engineered using Ghidra.
 
-The assembly code was assembled using [[dasm]].
+The assembly code was assembled using [[dasm]] using this command line:
+
+\begin{verbatim}
+    dasm main.asm -Lmain.lst -omain.bin -f3 -v4
+\end{verbatim}
 
 The document is written in \LaTeX.
 
@@ -108,8 +112,9 @@ The disk image contains the following sections. Note that the disk has 16 sector
 
 \begin{itemize}
   \item Sector 0: [[BOOT1]], target address [[$0800]]: The first stage boot loader.
-  \item Sector 0-9: [[BOOT2]], target address [[$2200]]: The second stage boot loader.
-  \item Sector 16-41: [[main]], target address [[$0800]]: The main program.
+  \item Sector 0-9: [[BOOT2]], target address [[$2200]]: The second stage boot loader, loaded by [[BOOT1]].
+  \item Sector 16-41 (interleaved): [[main]], target address [[$0800]]: The main program, loaded by [[BOOT2]].
+  \item Sector 48-119: Z-code for Zork I.
 \end{itemize}
 
 The sections can be extracted from the disk image using the following commands:
@@ -117,11 +122,13 @@ The sections can be extracted from the disk image using the following commands:
 \begin{verbatim}
 python -m extract --first 0 -n 1 -i "Zork I r15 (4am crack).dsk" -o boot1.bin
 python -m extract --first 1 -n 9 -i "Zork I r15 (4am crack).dsk" -o boot2.bin
-python -m extract --first 16 -n 26 -i "Zork I r15 (4am crack).dsk" -o main.bin
+python -m extract --first 16 -n 26 -i "Zork I r15 (4am crack).dsk" -o main.bin --skew
 \end{verbatim}
 
 We extract [[BOOT2]] only starting from sector 1, since the first page is
 just a copy of [[BOOT1]].
+
+Also note that the [[--skew]] option is used for [[main.bin]] because the sectors are interleaved on disk.
 
 \chapter{Programming techniques}
 
@@ -363,7 +370,12 @@ it to a third 16-bit memory location.
 <<Macros>>=
     MACRO ADDW
         CLC
-        ADDWC  {1}, {2}, {3}
+        LDA    {1}
+        ADC    {2}
+        STA    {3}
+        LDA    {1}+1
+        ADC    {2}+1
+        STA    {3}+1
     ENDM
 @ %def ADDW
 
@@ -426,6 +438,21 @@ and stores it in the 16-bit memory location in the third argument.
         STA    {3}+1
     ENDM
 @ %def SUBW
+
+[[SUBWL]] is a macro that subtracts the 16-bit memory value in the second argument from the 16-bit literal in the first argument,
+and stores it in the 16-bit memory location in the third argument.
+
+<<Macros>>=
+    MACRO SUBWL
+        SEC
+        LDA    <{1}
+        SBC    {2}
+        STA    {3}
+        LDA    >{1}
+        SBC    {2}+1
+        STA    {3}+1
+    ENDM
+@ %def SUBWL
 
 \subsection{ROLW, RORW}
 
@@ -771,7 +798,7 @@ main:
     LDX      #$80
 
 .clear:
-    STA      $80,X
+    STA      $00,X
     INX
     BNE      .clear
 @ %def main
@@ -1043,16 +1070,16 @@ For a fully-populated Apple II (64k RAM), the last viable RAM page is [[#$BF]].
 @
 
 We then store the difference as the last Z-image page in [[LAST_Z_PAGE]], and the same, plus 1,
-in [[FIRST_Z_PAGE]]. We also set the next page table entry of the last page to [[#$FF]].
+in [[NUM_PAGE_TABLE_ENTRIES]]. We also set the next page table entry of the last page to [[#$FF]].
 
-For Zork I, [[FIRST_Z_PAGE]] is [[#$4C]], and [[LAST_Z_PAGE]] is [[#$4B]].
+For Zork I, [[NUM_PAGE_TABLE_ENTRIES]] is [[#$4C]], and [[LAST_Z_PAGE]] is [[#$4B]].
 
 And lastly, we start the interpreter loop by executing the first instruction in z-code.
 
 <<main>>=
     TAY
     INY
-    STY      FIRST_Z_PAGE
+    STY      NUM_PAGE_TABLE_ENTRIES
     TAY
     STY      LAST_Z_PAGE
     LDA      #$FF
@@ -1294,7 +1321,7 @@ found, otherwise it is set.
 find_index_of_page_table:
     SUBROUTINE
 
-    LDX      FIRST_Z_PAGE
+    LDX      NUM_PAGE_TABLE_ENTRIES
     LDY      #$00
     LDA      SCRATCH2
 
@@ -2220,9 +2247,9 @@ Otherwise, we map the z-character to the ASCII character using the [[a2_table]] 
 
 <<A2 table>>=
 a2_table:
-    DC       "0123456789.,!?_#"
+    DC       "0123456789.,!?_#'"
     DC       '"
-    DC       "'/\-:()"
+    DC       "/\-:()"
 @ %def a2_table
 
 <<Print the zchar>>=
@@ -3155,7 +3182,7 @@ Otherwise, return the z-address (i.e. the absolute address minus the header addr
 negate:
     SUBROUTINE
 
-    SUBW     #$0000, SCRATCH2, SCRATCH2
+    SUBWL    #$0000, SCRATCH2, SCRATCH2
     RTS
 @ %def negate
 
@@ -3473,13 +3500,13 @@ iob.command:
     DC      #$00            ; ret_code
     DC      #$00            ; last_volume
     DC      #$60            ; last_slot_times_16
-    DC      #$00            ; last_drive_number
+    DC      #$01            ; last_drive_number
 
 dct:
     DC      #$00            ; device_type (0 for DISK II)
     DC      #$01            ; phases_per_track (1 for DISK II)
 dct.motor_count:
-    DC.W    #$EFD8          ; motor_on_time_count ($EFD8 for DISK II)
+    DC.W    #$D8EF          ; motor_on_time_count ($EFD8 for DISK II)
 @ %def iob iob.slot_times_16 iob.drive iob.track iob.sector iob.buffer iob.command dct
 
 The [[do_rwts_on_sector]] can read or write a sector using the [[RWTS]] routine in [[DOS]]. [[SCRATCH1]] contains the sector number relative to track 3 sector 0 (and can be [[>=16]]), and [[SCRATCH2]] contains the buffer to read into or write from.
@@ -3946,7 +3973,7 @@ The values of the operands are stored consecutively starting in location
     LDA      SCRATCH2
     STA      OPERAND0,X
     LDA      SCRATCH2+1
-    STA      OPERAND0,X
+    STA      OPERAND0+1,X
     INX
     INX
     INC      OPERAND_COUNT
@@ -4313,13 +4340,13 @@ Next, we load the local variables with the call arguments.
     STOB     #$00, SCRATCH2         ; zvar = 0
 
 .loop:
-    LDX      SCRATCH1               ; LOCAL_ZVARS[zvar] = OPERAND0[operand]
-    LDA      OPERAND0+1,X
+    LDX      SCRATCH1               ; LOCAL_ZVARS[zvar] = OPERANDS[operand+1]
+    LDA      OPERAND1+1,X           ; high byte first
     LDX      SCRATCH2
     STA      LOCAL_ZVARS,X
     INC      SCRATCH2
     LDX      SCRATCH1
-    LDA      OPERAND0,X
+    LDA      OPERAND1,X
     LDX      SCRATCH2
     STA      LOCAL_ZVARS,X
     INC      SCRATCH2               ; ++zvar
@@ -4385,12 +4412,12 @@ there were none, we can skip the whole local restore process.
     BEQ      .done_locals
 @
 
-We then set up the loop variables for restoring the locals.
+We then set up the loop variables for restoring the locals. I'm not really sure why we start with [[GLOBAL_ZVARS_ADDR]].
 
 <<Instruction ret>>=
-    STOW     LOCAL_ZVARS-2, SCRATCH1    ; ptr = &LOCAL_ZVARS[-1]
-    MOVB     SCRATCH2, SCRATCH3         ; count = STRATCH2
-    ASL                          ; ptr += 2 * count
+    STOW     GLOBAL_ZVARS_ADDR, SCRATCH1    ; ptr = GLOBAL_ZVARS_ADDR
+    MOVB     SCRATCH2, SCRATCH3             ; count = STRATCH2
+    ASL                                     ; ptr += 2 * count
     ADDA     SCRATCH1
 @
 
@@ -4448,7 +4475,7 @@ and the child object number (offset 6). Finally, there are two bytes of properti
 
 \section{Getting an object's address}
 
-The [[get_object_address]] routine gets the address of the object number in the [[A]] register and
+The [[get_object_addr]] routine gets the address of the object number in the [[A]] register and
 puts it in [[SCRATCH2]].
 
 It does this by first setting [[SCRATCH2]] to 9 times the [[A]] register (since objects entries
@@ -4473,27 +4500,25 @@ get_object_addr:
     BCC      .continue
     INC      SCRATCH2+1
     CLC
-
-.continue:
 @ %def get_object_addr
 
 Next, we add [[FIRST_OBJECT_OFFSET]] ([[53]]) to [[SCRATCH2]]. This skips the 31 words of property defaults, which
 would be 62 bytes, but since object numbers start from 1, the first object is at [[53+9=62]] bytes.
 
 <<Get object address>>=
+.continue:
     ADC      #FIRST_OBJECT_OFFSET
     STA      SCRATCH2
     BCC      .continue2
     INC      SCRATCH2+1
-
-.continue2:
 @
 
 Finally, we get the address of the object table stored in the header and add it
 to [[SCRATCH2]]. The resulting address is thus in [[SCRATCH2]].
 
 <<Get object address>>=
-    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET-1
+.continue2:
+    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
     LDA      (Z_HEADER_ADDR),Y
     CLC
     ADC      SCRATCH2
@@ -5484,15 +5509,15 @@ branch, otherwise skips to the next instruction.
 [[negated_branch]] is the same, except that it inverts the branch condition.
 
 <<Handle branch>>=
-negated_branch:
+branch:
     SUBROUTINE
 
     JSR      get_next_code_byte
     ORA      #$00
     BMI      .do_branch
-    BPL      .no_branch
+    BPL      .no_branch     ; unconditional
 
-branch:
+negated_branch:
     JSR      get_next_code_byte
     ORA      #$00
     BPL      .do_branch
@@ -5944,7 +5969,7 @@ get_random:
 instr_sub:
     SUBROUTINE
 
-    SUBW     OPERAND1, OPERAND0, SCRATCH2
+    SUBW     OPERAND0, OPERAND1, SCRATCH2
     JMP      store_and_next
 @ %def instr_sub
 
@@ -6495,7 +6520,7 @@ instr_get_parent:
     STA      SCRATCH2
     LDA      #$00
     STA      SCRATCH2+1
-    JSR      store_and_next
+    JMP      store_and_next
 @ %def instr_get_parent
 
 \subsection{get\_prop}
@@ -6928,7 +6953,8 @@ LOCAL_ZVARS         EQU     $9A     ; 30 bytes
 AFTER_Z_IMAGE_ADDR  EQU     $B8
 Z_HEADER_ADDR       EQU     $BA     ; 2 bytes
 NUM_IMAGE_PAGES     EQU     $BC
-FIRST_Z_PAGE        EQU     $BD
+NUM_PAGE_TABLE_ENTRIES EQU  $BD
+FIRST_Z_PAGE        EQU     $BE
 LAST_Z_PAGE         EQU     $BF
 PAGE_L_TABLE        EQU     $C0     ; 2 bytes
 PAGE_H_TABLE        EQU     $C2     ; 2 bytes

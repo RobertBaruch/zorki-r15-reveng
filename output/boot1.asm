@@ -83,7 +83,12 @@
     ENDM
     MACRO ADDW
         CLC
-        ADDWC  {1}, {2}, {3}
+        LDA    {1}
+        ADC    {2}
+        STA    {3}
+        LDA    {1}+1
+        ADC    {2}+1
+        STA    {3}+1
     ENDM
     MACRO ADDWC
         LDA    {1}
@@ -117,6 +122,15 @@
         SBC    {2}
         STA    {3}
         LDA    {1}+1
+        SBC    {2}+1
+        STA    {3}+1
+    ENDM
+    MACRO SUBWL
+        SEC
+        LDA    <{1}
+        SBC    {2}
+        STA    {3}
+        LDA    >{1}
         SBC    {2}+1
         STA    {3}+1
     ENDM
@@ -178,7 +192,8 @@ LOCAL_ZVARS         EQU     $9A     ; 30 bytes
 AFTER_Z_IMAGE_ADDR  EQU     $B8
 Z_HEADER_ADDR       EQU     $BA     ; 2 bytes
 NUM_IMAGE_PAGES     EQU     $BC
-FIRST_Z_PAGE        EQU     $BD
+NUM_PAGE_TABLE_ENTRIES EQU  $BD
+FIRST_Z_PAGE        EQU     $BE
 LAST_Z_PAGE         EQU     $BF
 PAGE_L_TABLE        EQU     $C0     ; 2 bytes
 PAGE_H_TABLE        EQU     $C2     ; 2 bytes

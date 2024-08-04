@@ -83,7 +83,12 @@
     ENDM
     MACRO ADDW
         CLC
-        ADDWC  {1}, {2}, {3}
+        LDA    {1}
+        ADC    {2}
+        STA    {3}
+        LDA    {1}+1
+        ADC    {2}+1
+        STA    {3}+1
     ENDM
     MACRO ADDWC
         LDA    {1}
@@ -117,6 +122,15 @@
         SBC    {2}
         STA    {3}
         LDA    {1}+1
+        SBC    {2}+1
+        STA    {3}+1
+    ENDM
+    MACRO SUBWL
+        SEC
+        LDA    <{1}
+        SBC    {2}
+        STA    {3}
+        LDA    >{1}
         SBC    {2}+1
         STA    {3}+1
     ENDM
@@ -178,7 +192,8 @@ LOCAL_ZVARS         EQU     $9A     ; 30 bytes
 AFTER_Z_IMAGE_ADDR  EQU     $B8
 Z_HEADER_ADDR       EQU     $BA     ; 2 bytes
 NUM_IMAGE_PAGES     EQU     $BC
-FIRST_Z_PAGE        EQU     $BD
+NUM_PAGE_TABLE_ENTRIES EQU  $BD
+FIRST_Z_PAGE        EQU     $BE
 LAST_Z_PAGE         EQU     $BF
 PAGE_L_TABLE        EQU     $C0     ; 2 bytes
 PAGE_H_TABLE        EQU     $C2     ; 2 bytes
@@ -233,7 +248,7 @@ main:
     LDX      #$80
 
 .clear:
-    STA      $80,X
+    STA      $00,X
     INX
     BNE      .clear
     LDX      #$FF
@@ -372,7 +387,7 @@ main:
     BCC      .brk
     TAY
     INY
-    STY      FIRST_Z_PAGE
+    STY      NUM_PAGE_TABLE_ENTRIES
     TAY
     STY      LAST_Z_PAGE
     LDA      #$FF
@@ -514,7 +529,7 @@ do_instruction:
     LDA      SCRATCH2
     STA      OPERAND0,X
     LDA      SCRATCH2+1
-    STA      OPERAND0,X
+    STA      OPERAND0+1,X
     INX
     INX
     INC      OPERAND_COUNT
@@ -795,15 +810,15 @@ store_var2:
     LDA      SCRATCH2
     STA      (SCRATCH1),Y
     RTS
-negated_branch:
+branch:
     SUBROUTINE
 
     JSR      get_next_code_byte
     ORA      #$00
     BMI      .do_branch
-    BPL      .no_branch
+    BPL      .no_branch     ; unconditional
 
-branch:
+negated_branch:
     JSR      get_next_code_byte
     ORA      #$00
     BPL      .do_branch
@@ -1012,7 +1027,7 @@ instr_get_parent:
     STA      SCRATCH2
     LDA      #$00
     STA      SCRATCH2+1
-    JSR      store_and_next
+    JMP      store_and_next
 instr_get_prop_len:
     CLC
     LDA      OPERAND0
@@ -1167,9 +1182,9 @@ instr_ret:
     JSR      pop
     LDA      SCRATCH2
     BEQ      .done_locals
-    STOW     LOCAL_ZVARS-2, SCRATCH1    ; ptr = &LOCAL_ZVARS[-1]
-    MOVB     SCRATCH2, SCRATCH3         ; count = STRATCH2
-    ASL                          ; ptr += 2 * count
+    STOW     GLOBAL_ZVARS_ADDR, SCRATCH1    ; ptr = GLOBAL_ZVARS_ADDR
+    MOVB     SCRATCH2, SCRATCH3             ; count = STRATCH2
+    ASL                                     ; ptr += 2 * count
     ADDA     SCRATCH1
 .loop:
     JSR      pop                ; SCRATCH2 = pop()
@@ -1505,7 +1520,7 @@ instr_add:
 instr_sub:
     SUBROUTINE
 
-    SUBW     OPERAND1, OPERAND0, SCRATCH2
+    SUBW     OPERAND0, OPERAND1, SCRATCH2
     JMP      store_and_next
 instr_mul:
     SUBROUTINE
@@ -1682,13 +1697,13 @@ instr_call:
     STOB     #$00, SCRATCH2         ; zvar = 0
 
 .loop:
-    LDX      SCRATCH1               ; LOCAL_ZVARS[zvar] = OPERAND0[operand]
-    LDA      OPERAND0+1,X
+    LDX      SCRATCH1               ; LOCAL_ZVARS[zvar] = OPERANDS[operand+1]
+    LDA      OPERAND1+1,X           ; high byte first
     LDX      SCRATCH2
     STA      LOCAL_ZVARS,X
     INC      SCRATCH2
     LDX      SCRATCH1
-    LDA      OPERAND0,X
+    LDA      OPERAND1,X
     LDX      SCRATCH2
     STA      LOCAL_ZVARS,X
     INC      SCRATCH2               ; ++zvar
@@ -2217,7 +2232,7 @@ set_sign:
 negate:
     SUBROUTINE
 
-    SUBW     #$0000, SCRATCH2, SCRATCH2
+    SUBWL    #$0000, SCRATCH2, SCRATCH2
     RTS
 flip_sign:
     SUBROUTINE
@@ -2328,15 +2343,13 @@ get_object_addr:
     BCC      .continue
     INC      SCRATCH2+1
     CLC
-
 .continue:
     ADC      #FIRST_OBJECT_OFFSET
     STA      SCRATCH2
     BCC      .continue2
     INC      SCRATCH2+1
-
 .continue2:
-    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET-1
+    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
     LDA      (Z_HEADER_ADDR),Y
     CLC
     ADC      SCRATCH2
@@ -2647,7 +2660,7 @@ set_page_first:
 find_index_of_page_table:
     SUBROUTINE
 
-    LDX      FIRST_Z_PAGE
+    LDX      NUM_PAGE_TABLE_ENTRIES
     LDY      #$00
     LDA      SCRATCH2
 
@@ -2820,9 +2833,9 @@ A_mod_3:
 .end:
     RTS
 a2_table:
-    DC       "0123456789.,!?_#"
+    DC       "0123456789.,!?_#'"
     DC       '"
-    DC       "'/\-:()"
+    DC       "/\-:()"
 get_alphabet:
     LDA      SHIFT_ALPHABET
     BPL      .remove_shift
@@ -3506,13 +3519,13 @@ iob.command:
     DC      #$00            ; ret_code
     DC      #$00            ; last_volume
     DC      #$60            ; last_slot_times_16
-    DC      #$00            ; last_drive_number
+    DC      #$01            ; last_drive_number
 
 dct:
     DC      #$00            ; device_type (0 for DISK II)
     DC      #$01            ; phases_per_track (1 for DISK II)
 dct.motor_count:
-    DC.W    #$EFD8          ; motor_on_time_count ($EFD8 for DISK II)
+    DC.W    #$D8EF          ; motor_on_time_count ($EFD8 for DISK II)
 do_rwts_on_sector:
     SUBROUTINE
 

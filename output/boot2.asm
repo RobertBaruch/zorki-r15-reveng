@@ -83,7 +83,12 @@
     ENDM
     MACRO ADDW
         CLC
-        ADDWC  {1}, {2}, {3}
+        LDA    {1}
+        ADC    {2}
+        STA    {3}
+        LDA    {1}+1
+        ADC    {2}+1
+        STA    {3}+1
     ENDM
     MACRO ADDWC
         LDA    {1}
@@ -117,6 +122,15 @@
         SBC    {2}
         STA    {3}
         LDA    {1}+1
+        SBC    {2}+1
+        STA    {3}+1
+    ENDM
+    MACRO SUBWL
+        SEC
+        LDA    <{1}
+        SBC    {2}
+        STA    {3}
+        LDA    >{1}
         SBC    {2}+1
         STA    {3}+1
     ENDM
