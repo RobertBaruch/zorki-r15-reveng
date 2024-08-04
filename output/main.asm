@@ -222,6 +222,7 @@ OBJECT_PROPS_OFFSET     EQU     $07
 VAR_CURR_ROOM       EQU     $10
 VAR_SCORE           EQU     $11
 VAR_MAX_SCORE       EQU     $12
+
     ORG      $0800
 
 main:

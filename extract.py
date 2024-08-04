@@ -6,10 +6,10 @@ from absl import flags
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("first", None, "First sector to read")
 flags.DEFINE_integer("last", None, "Last sector to read")
-flags.DEFINE_integer("nsectors", None, "Number of sectors to read")
-flags.DEFINE_string("infile", None, "Input file (dsk image)")
-flags.DEFINE_string("outfile", None, "Output file")
-flags.DEFINE_bool("skew", False, "Translate to DOS ordering")
+flags.DEFINE_integer("nsectors", None, "Number of sectors to read", short_name="n")
+flags.DEFINE_string("infile", None, "Input file (dsk image)", short_name="i")
+flags.DEFINE_string("outfile", None, "Output file", short_name="o")
+flags.DEFINE_bool("skew", False, "Translate sectors to DOS ordering", short_name="s")
 
 flags.mark_flag_as_required("first")
 flags.mark_flag_as_required("infile")
