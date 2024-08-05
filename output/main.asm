@@ -735,8 +735,7 @@ store_A_and_next:
     SUBROUTINE
 
     STA      SCRATCH2
-    LDA      #$00
-    STA      SCRATCH2+1
+    STOB     #$00, SCRATCH2+1
 
 store_and_next:
     SUBROUTINE
@@ -3629,10 +3628,8 @@ please_reinsert_game_diskette:
     JSR      dump_buffer_with_more
 
 .set_slot6_drive1:
-    LDA      #$60
-    STA      iob.slot_times_16
-    LDA      #$01
-    STA      iob.drive
+    STOB     #$60, iob.slot_times_16
+    STOB     #$01, iob.drive
     RTS
 instr_save:
     SUBROUTINE

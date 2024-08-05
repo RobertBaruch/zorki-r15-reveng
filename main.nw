@@ -4913,8 +4913,8 @@ please_reinsert_game_diskette:
     JSR      dump_buffer_with_more
 
 .set_slot6_drive1:
-    STOW     #$60, iob.slot_times_16
-    STOW     #$01, iob.drive
+    STOB     #$60, iob.slot_times_16
+    STOB     #$01, iob.drive
     RTS
 @ %def sReinsertGameDiskette sPressReturnToContinue please_reinsert_game_diskette
 
@@ -6883,9 +6883,7 @@ sInternalError:
     DC       "ZORK INTERNAL ERROR!"
 @ %def sInternalError
 
-<<routines>>=
-<<main>>
-
+<<Instruction execution routines>>=
 <<Instruction tables>>
 
 <<Do instruction>>
@@ -6901,6 +6899,29 @@ sInternalError:
 <<Store and go to next instruction>>
 <<Store var>>
 <<Handle branch>>
+@
+
+<<Disk routines>>=
+<<iob struct>>
+<<Do RWTS on sector>>
+<<Reading sectors>>
+<<Writing sectors>>
+<<Do reset window>>
+<<Print ASCII string>>
+<<Save diskette strings>>
+<<Insert save diskette>>
+<<Get prompted number from user>>
+<<Reinsert game diskette>>
+<<Instruction save>>
+<<Copy data to buff>>
+<<Instruction restore>>
+<<Copy data from buff>>
+@
+
+<<routines>>=
+<<main>>
+
+<<Instruction execution routines>>
 <<Instruction rtrue>>
 <<Instruction rfalse>>
 <<Instruction print>>
@@ -7020,20 +7041,7 @@ sInternalError:
 <<Output string to console>>
 <<Read line>>
 <<Reset window>>
-<<iob struct>>
-<<Do RWTS on sector>>
-<<Reading sectors>>
-<<Writing sectors>>
-<<Do reset window>>
-<<Print ASCII string>>
-<<Save diskette strings>>
-<<Insert save diskette>>
-<<Get prompted number from user>>
-<<Reinsert game diskette>>
-<<Instruction save>>
-<<Copy data to buff>>
-<<Instruction restore>>
-<<Copy data from buff>>
+<<Disk routines>>
 <<Instruction quit>>
 <<Internal error string>>
 <<brk>>
