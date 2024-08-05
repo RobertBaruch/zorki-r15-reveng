@@ -476,8 +476,7 @@ do_instruction:
     SUBROUTINE
 
     MOVW     Z_PC, TMP_Z_PC     ; Save PC for debugging
-    LDA      Z_PC+2
-    STA      TMP_Z_PC+2
+    MOVB     Z_PC+2, TMP_Z_PC+2
     STOB     #$00, OPERAND_COUNT
     JSR      get_next_code_byte
     STA      CURR_OPCODE
@@ -642,8 +641,7 @@ get_const_byte:
 
     JSR      get_next_code_byte
     STA      SCRATCH2
-    LDA      #$00
-    STA      SCRATCH2+1
+    STOB     #$00, SCRATCH2+1
     RTS
 get_const_word:
     SUBROUTINE
@@ -673,15 +671,9 @@ pop_push:
     JMP      push
 
 .pop_push:
-    LDA      SCRATCH2
-    PHA
-    LDA      SCRATCH2+1
-    PHA
+    PSHW     SCRATCH2
     JSR      pop
-    PLA
-    STA      SCRATCH2+1
-    PLA
-    STA      SCRATCH2
+    PULW     SCRATCH2
     JMP      push
 get_var_content:
     SUBROUTINE
@@ -717,13 +709,8 @@ get_nonstack_var:
     STA      SCRATCH1+1
 
 .get_global_var_addr:
-    CLC                                 ; var_ptr += GLOBAL_ZVARS_ADDR
-    LDA      GLOBAL_ZVARS_ADDR
-    ADC      SCRATCH1
-    STA      SCRATCH1
-    LDA      GLOBAL_ZVARS_ADDR+1
-    ADC      SCRATCH1+1
-    STA      SCRATCH1+1
+    ; var_ptr += GLOBAL_ZVARS_ADDR
+    ADDW     GLOBAL_ZVARS_ADDR, SCRATCH1, SCRATCH1
 
 .get_global_var_value:
     LDY      #$00                       ; SCRATCH2 = *var_ptr
@@ -759,16 +746,10 @@ store_and_next:
 store_var:
     SUBROUTINE
 
-    LDA      SCRATCH2               ; A = get_next_code_byte()
-    PHA
-    LDA      SCRATCH2+1
-    PHA
+    PSHW     SCRATCH2               ; A = get_next_code_byte()
     JSR      get_next_code_byte
     TAX
-    PLA
-    STA      SCRATCH2+1
-    PLA
-    STA      SCRATCH2
+    PULW     SCRATCH2
     TXA
 
 store_var2:
@@ -800,13 +781,7 @@ store_var2:
     LDA      #$00
     ROL
     STA      SCRATCH1+1
-    CLC
-    LDA      GLOBAL_ZVARS_ADDR
-    ADC      SCRATCH1
-    STA      SCRATCH1
-    LDA      GLOBAL_ZVARS_ADDR+1
-    ADC      SCRATCH1+1
-    STA      SCRATCH1+1
+    ADDW     GLOBAL_ZVARS_ADDR, SCRATCH1, SCRATCH1
     LDY      #$00
     LDA      SCRATCH2+1
     STA      (SCRATCH1),Y
@@ -934,27 +909,16 @@ instr_print:
 print_string_literal:
     SUBROUTINE
 
-    LDA      Z_PC
-    STA      Z_PC2_L
-    LDA      Z_PC+1
-    STA      Z_PC2_H
-    LDA      Z_PC+2
-    STA      Z_PC2_HH
-    LDA      #$00
-    STA      ZCODE_PAGE_VALID2
+    MOVB     Z_PC, Z_PC2_L
+    MOVB     Z_PC+1, Z_PC2_H
+    MOVB     Z_PC+2, Z_PC2_HH
+    STOB     #$00, ZCODE_PAGE_VALID2
     JSR      print_zstring
-    LDA      Z_PC2_L
-    STA      Z_PC
-    LDA      Z_PC2_H
-    STA      Z_PC+1
-    LDA      Z_PC2_HH
-    STA      Z_PC+2
-    LDA      ZCODE_PAGE_VALID2
-    STA      ZCODE_PAGE_VALID
-    LDA      ZCODE_PAGE_ADDR2
-    STA      ZCODE_PAGE_ADDR
-    LDA      ZCODE_PAGE_ADDR2+1
-    STA      ZCODE_PAGE_ADDR+1
+    MOVB     Z_PC2_L, Z_PC
+    MOVB     Z_PC2_H, Z_PC+1
+    MOVB     Z_PC2_HH, Z_PC+2
+    MOVB     ZCODE_PAGE_VALID2, ZCODE_PAGE_VALID
+    MOVW     ZCODE_PAGE_ADDR2, ZCODE_PAGE_ADDR
     RTS
 instr_print_ret:
     SUBROUTINE
@@ -1109,24 +1073,15 @@ remove_obj:
 
 .continue:
     TAX                             ; save obj_ptr
-    LDA      SCRATCH2
-    PHA
-    LDA      SCRATCH2+1
-    PHA
+    PSHW     SCRATCH2
     TXA
     JSR      get_object_addr        ; parent_ptr = get_object_addr<A>
     LDY      #OBJECT_CHILD_OFFSET   ; child_num = parent_ptr->child
     LDA      (SCRATCH2),Y
     CMP      OPERAND0               ; if (child_num != obj_num) loop
     BNE      .loop
-    PLA                             ; restore obj_ptr
-    STA      SCRATCH1+1
-    PLA
-    STA      SCRATCH1
-    LDA      SCRATCH1
-    PHA
-    LDA      SCRATCH1+1
-    PHA
+    PULW     SCRATCH1               ; restore obj_ptr
+    PSHW     SCRATCH1
     LDY      #OBJECT_SIBLING_OFFSET ; A = obj_ptr->next
     LDA      (SCRATCH1),Y
     LDY      #OBJECT_CHILD_OFFSET   ; parent_ptr->child = A
@@ -1138,22 +1093,13 @@ remove_obj:
     LDA      (SCRATCH2),Y
     CMP      OPERAND0               ; if (child_num != obj_num) loop
     BNE      .loop
-    PLA                             ; restore obj_ptr
-    STA      SCRATCH1+1
-    PLA
-    STA      SCRATCH1
-    LDA      SCRATCH1
-    PHA
-    LDA      SCRATCH1+1
-    PHA
+    PULW     SCRATCH1               ; restore obj_ptr
+    PSHW     SCRATCH1
     LDA      (SCRATCH1),Y           ; child_ptr->next = obj_ptr->next
     STA      (SCRATCH2),Y
 
 .detach:
-    PLA                             ; restore obj_ptr
-    STA      SCRATCH2+1
-    PLA
-    STA      SCRATCH2
+    PULW     SCRATCH2               ; restore obj_ptr
     LDY      #OBJECT_PARENT_OFFSET  ; obj_ptr->parent = 0
     LDA      #$00
     STA      (SCRATCH2),Y
@@ -1801,15 +1747,12 @@ instr_sread:
     ADDW     OPERAND1, Z_HEADER_ADDR, OPERAND1  ; parse buffer
     JSR      read_line      ; SCRATCH3H = read_line() (input_count)
     STA      SCRATCH3+1
-    LDA      #$00           ; SCRATCH3L = 0  (char count)
-    STA      SCRATCH3
+    STOB     #$00, SCRATCH3 ; SCRATCH3L = 0  (char count)
     LDY      #$01
     LDA      #$00           ; store 0 in the parse buffer + 1.
     STA      (OPERAND1),Y
-    LDA      #$02
-    STA      TOKEN_IDX
-    LDA      #$01
-    STA      INPUT_PTR
+    STOB     #$02, TOKEN_IDX
+    STOB     #$01, INPUT_PTR
 .loop_word:
     LDY      #$00           ; if parsebuf[0] == parsebuf[1] do_instruction
     LDA      (OPERAND1),Y
@@ -1908,8 +1851,7 @@ instr_sread:
 
     PLA
     STA      SCRATCH3+1
-    LDA      #$00
-    STA      SCRATCH3
+    STOB     #$00, SCRATCH3
     JMP      .loop_word
 skip_separators:
     SUBROUTINE
@@ -2219,8 +2161,7 @@ divu16:
 check_sign:
     SUBROUTINE
 
-    LDA      #$00
-    STA      SIGN_BIT
+    STOB     #$00, SIGN_BIT
     LDA      SCRATCH2+1
     JSR      flip_sign
     LDA      SCRATCH1+1
@@ -2333,8 +2274,7 @@ get_object_addr:
     SUBROUTINE
 
     STA      SCRATCH2
-    LDA      #$00
-    STA      SCRATCH2+1
+    STOB     #$00, SCRATCH2+1
     LDA      SCRATCH2
     ASL      SCRATCH2
     ROL      SCRATCH2+1
@@ -2570,8 +2510,7 @@ get_next_code_byte2:
 .not_found_in_page_table:
     CMP      PAGE_TABLE_INDEX
     BNE      .read_from_disk
-    LDA      #$00
-    STA      ZCODE_PAGE_VALID
+    STOB     #$00, ZCODE_PAGE_VALID
 
 .read_from_disk:
     MOVW     HIGH_MEM_ADDR, SCRATCH2
@@ -2793,8 +2732,7 @@ print_zstring:
     STA      ZDECOMPRESS_STATE
     PLA
     STA      LOCKED_ALPHABET
-    LDA      #$FF              ; Resets any temporary shift
-    STA      SHIFT_ALPHABET
+    STOB     #$FF, SHIFT_ALPHABET ; Resets any temporary shift
     JMP      .loop
 A_mod_3:
     CMP      #$03
@@ -2829,10 +2767,7 @@ get_next_zchar:
     BNE      .check_for_char_2
     INC      ZDECOMPRESS_STATE
     JSR      get_next_code_word
-    LDA      SCRATCH2
-    STA      ZCHARS_L
-    LDA      SCRATCH2+1
-    STA      ZCHARS_H
+    MOVW     SCRATCH2, ZCHARS_L
     LDA      ZCHARS_H
     LSR
     LSR
@@ -2844,8 +2779,7 @@ get_next_zchar:
     SEC
     SBC      #$01
     BNE      .check_for_last
-    LDA      #$02
-    STA      ZDECOMPRESS_STATE
+    STOB     #$02, ZDECOMPRESS_STATE
     LDA      ZCHARS_H
     LSR
     LDA      ZCHARS_L
@@ -2864,12 +2798,10 @@ get_next_zchar:
     RTS
 
 .check_for_last:
-    LDA      #$00
-    STA      ZDECOMPRESS_STATE
+    STOB     #$00, ZDECOMPRESS_STATE
     LDA      ZCHARS_H
     BPL      .get_char_3
-    LDA      #$FF
-    STA      ZDECOMPRESS_STATE
+    STOB     #$FF, ZDECOMPRESS_STATE
 
 .get_char_3:
     LDA      ZCHARS_L
@@ -2879,8 +2811,7 @@ get_next_zchar:
 ascii_to_zchar:
     SUBROUTINE
 
-    LDA      #$00
-    STA      LOCKED_ALPHABET
+    STOB     #$00, LOCKED_ALPHABET
     LDX      #$00
     LDY      #$06
 
@@ -2891,8 +2822,7 @@ ascii_to_zchar:
     DEY
     BNE      .clear
 
-    LDA      #$06
-    STA      SCRATCH3+1         ; nchars = 6
+    STOB     #$06, SCRATCH3+1   ; nchars = 6
     LDA      #$00
     STA      SCRATCH1           ; dest_index = 0
     STA      SCRATCH2           ; index = 0
@@ -3317,8 +3247,7 @@ print_status_line:
     STA      CH
     STA      CV
     JSR      VTAB
-    LDA      #$3F
-    STA      INVFLG
+    STOB     #$3F, INVFLG
     JSR      CLREOL
 
     LDA      #VAR_CURR_ROOM
@@ -3326,12 +3255,8 @@ print_status_line:
     JSR      print_obj_in_A
     JSR      dump_buffer_to_screen
 
-    LDA      #25
-    STA      CH
-    LDA      #<sScore
-    STA      SCRATCH2
-    LDA      #>sScore
-    STA      SCRATCH2+1
+    STOB     #25, CH
+    STOW     #sScore, SCRATCH2
     LDX      #$06
     JSR      cout_string
 
@@ -3348,8 +3273,7 @@ print_status_line:
     JSR      print_number
     JSR      dump_buffer_to_screen
 
-    LDA      #$FF
-    STA      INVFLG
+    STOB     #$FF, INVFLG
     PLA
     STA      CV
     PLA
@@ -3373,8 +3297,7 @@ read_line:
     SUBROUTINE
 
     JSR      dump_buffer_line
-    LDA      WNDTOP
-    STA      CURR_LINE
+    MOVB     WNDTOP, CURR_LINE
     JSR      GETLN1
     INC      CURR_LINE
     LDA      #$8D               ; newline
@@ -3389,8 +3312,7 @@ read_line:
     TXA
     STA      BUFF_END
     JSR      dump_buffer_to_printer
-    LDA      #$00
-    STA      BUFF_END
+    STOB     #$00, BUFF_END
 
 .continue
     PLA                         ; restore num of chars in input
@@ -3467,12 +3389,8 @@ do_rwts_on_sector:
     SUBROUTINE
 
     STA      iob.command
-    LDA      SCRATCH2
-    STA      iob.buffer
-    LDA      SCRATCH2+1
-    STA      iob.buffer+1
-    LDA      #$03
-    STA      iob.track
+    MOVW     SCRATCH2, iob.buffer
+    STOB     #$03, iob.track
     LDA      SCRATCH1
     LDX      SCRATCH1+1
     SEC
@@ -3523,17 +3441,11 @@ inc_sector_and_write:
     INCW     SCRATCH1
 
 .write_next_sector:
-    LDA      dct.motor_count
-    PHA
-    LDA      dct.motor_count+1
-    PHA
+    PSHW     dct.motor_count
     STOW2    #$D8EF, dct.motor_count
     LDA      #$02
     JSR      do_rwts_on_sector
-    PLA
-    STA      dct.motor_count+1
-    PLA
-    STA      dct.motor_count
+    PULW     dct.motor_count
     RTS
 do_reset_window:
     JSR      reset_window
