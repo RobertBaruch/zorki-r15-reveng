@@ -783,6 +783,30 @@ end of the page.
 <<RWTS routines>>
 @
 
+\chapter{The Z-image}
+
+The Z-machine operates on the Z-image of the game, and executes Z-code in Z-memory. The Z-image on disk is divided into three consecutive parts: dynamic, static, and high.
+
+Dynamic memory is memory that may be changed by the game, and is part of the game state when saving and restoring. It consists of the Z-image header (the first page of the Z-image) and any other modifiable data such as the object hierarchy and global variables.
+
+Static memory is memory that is not changed by the game, so it does not have to be saved as part of a saved game. It consists of things like strings, and the game dictionary (list of words accepted by the parser).
+
+High memory is memory that is not loaded into memory when the game starts, but is instead read from disk on demand. This is where the Z-code lives.
+
+When starting the game, the Z-image dynamic and static parts are loaded into 6502 memory. The high part is not loaded, but is instead read from disk on demand as Z-code is executed.
+
+For this version of Zork I, these are the Z-addresses (addresses relative to the beginning of the Z-header) for various parts of the Z-image. These addresses are stored in the Z-header in big-endian order, and are used by the Z-machine to locate the various parts of the Z-image:
+
+\begin{itemize}
+  \item Static memory base: [[$2CDC]]
+  \item High memory base: [[$476C]]
+  \item Starting Z program counter: [[$4859]]
+  \item Start of abbreviations table: [[$00CA]]
+  \item Start of object table: [[$010A]]
+  \item Start of global variables: [[$20DE]]
+  \item Start of dictionary: [[$3686]]
+\end{itemize}
+
 \chapter{The main program}
 
 This is the Z-machine proper.
@@ -815,20 +839,6 @@ is set to [[$C100]]. This is the address of the ROM of the card in slot 1,
 which is typically the printer card. It will be used later when outputting
 text to both screen and printer.
 
-Next, we set [[ZCODE_PAGE_VALID]] to zero, which will later cause the Z-machine
-to load the first page of Z-code into memory when the first instruction is
-retrieved.
-
-The z-stack count, [[STACK_COUNT]], is set to 1, and the z-stack pointer,
-[[Z_SP]], is set to [[$03E8]].
-
-There are two page tables, [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]], which
-are set to [[$2200]] and [[$2280]], respectively. These are used to map
-Z-machine memory pages to physical memory pages.
-
-There are two other page tables, [[NEXT_PAGE_TABLE]] and [[PREV_PAGE_TABLE]],
-which are set to [[$2300]] and [[$2380]], respectively. Together this forms a doubly-linked list of pages.
-
 <<main>>=
 .set_vars:
     ; Historical note: Setting PRINTER_CSW was originally a call to SINIT,
@@ -837,23 +847,48 @@ which are set to [[$2300]] and [[$2380]], respectively. Together this forms a do
     STA      PRINTER_CSW+1
     LDA      #$00
     STA      PRINTER_CSW
+@
+
+Next, we set [[ZCODE_PAGE_VALID]] to zero. This means that any access to
+Z-code will result in its page needing to be located, either in the cache, or loaded
+from disk.
+
+<<main>>=
     LDA      #$00
     STA      ZCODE_PAGE_VALID
     STA      ZCODE_PAGE_VALID2
+@
+
+The z-stack count, [[STACK_COUNT]], is set to 1, and the z-stack pointer,
+[[Z_SP]], is set to [[$03E8]].
+
+<<main>>=
     STOB     #$01, STACK_COUNT
     STOW     #$03E8, Z_SP
     STOB     #$FF, ZCHAR_SCRATCH1+6
+@
+
+There are two page cache tables, [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]], which
+are set to [[$2200]] and [[$2280]], respectively. These are used to map
+Z-code pages to physical memory pages.
+
+There are two other page tables, [[NEXT_PAGE_TABLE]] and [[PREV_PAGE_TABLE]],
+which are set to [[$2300]] and [[$2380]], respectively. Together this forms a doubly-linked list of pages.
+
+<<main>>=
     STOW     #$2200, PAGE_L_TABLE
     STOW     #$2280, PAGE_H_TABLE
     STOW     #$2300, NEXT_PAGE_TABLE
     STOW     #$2380, PREV_PAGE_TABLE
 @
 
-Next, we initialize the page tables. This zeros out [[PAGE_L_TABLE]] and
+We initialize the page tables. This zeros out [[PAGE_L_TABLE]] and
 [[PAGE_H_TABLE]], and then sets up the next and previous page tables.
 [[NEXT_PAGE_TABLE]] is initialized to [[01 02 03 ... 7F FF]] and so on, while
 [[PREV_PAGE_TABLE]] is initialized to [[FF 00 01 ... 7D 7E]]. [[FF]]
 is the null pointer for this linked list.
+
+The linked list is a most-recently-used cache. When a page of Z-code is accessed, it is placed on the front of the list.
 
 <<main>>=
     LDY      #$00
@@ -879,12 +914,18 @@ is the null pointer for this linked list.
     STA      (NEXT_PAGE_TABLE),Y
 @
 
-Next, we set [[FIRST_Z_PAGE]] to 0 (the head of the list), [[LAST_Z_PAGE]] to [[#$7F]] (the tail of the list), and [[Z_HEADER_ADDR]] to [[$2C00]].
-[[Z_HEADER_ADDR]] is the address in memory where the Z-code image header is stored.
+To complete initialization of the linked list, we set [[FIRST_Z_PAGE]] to 0 (the head of the list), [[LAST_Z_PAGE]] to [[#$7F]] (the tail of the list).
 
 <<main>>=
     STOB     #$00, FIRST_Z_PAGE
     STOB     #$7F, LAST_Z_PAGE
+@
+
+Now we set [[Z_HEADER_ADDR]] to [[$2C00]].
+[[Z_HEADER_ADDR]] is the address in memory where the Z-image starts, and where
+the Z-header is located.
+
+<<main>>=
     STOW     #$2C00, Z_HEADER_ADDR
 @
 
@@ -900,10 +941,9 @@ do_reset_window:
     RTS
 @ %def do_reset_window
 
-Next, we start reading the image of Z-code from disk into memory. The first page
-of the image, which is the image header, gets loaded into the address stored in [[Z_HEADER_ADDR]].
+Next, we read the first page of the Z-image from disk into memory. This is the Z-header, which gets loaded into the address stored in [[Z_HEADER_ADDR]].
 This done through the [[read_from_sector]] routine, which reads the (256 byte) sector stored in
-[[SCRATCH1]], relative to track 3 sector 0, into the address stored in [[SCRATCH2]].
+[[SCRATCH1]], relative to track 3 sector 0, into the address stored in [[SCRATCH2]]. This means that the Z-image is always stored from sector 48 ([[=3*16]]) on.
 
 If there was an error reading, we jump back to the beginning of the main program and
 start again. This would result in a failure loop with no apparent output if the
@@ -922,48 +962,45 @@ disk is damaged.
     JMP      main
 @
 
-If there was no error reading the image header, we write [[#$FF]] into byte 5 of the header,
-whose purpose is not known at this point. Then we load byte 4 of the header, which is the page
-for the ``base of high memory'', and store it (plus 1) in [[NUM_IMAGE_PAGES]].
+If there was no error reading the image header, we write [[#$FF]] into the low byte of the base of high memory in the header, and then we load the page (high byte) of the base of high memory from the header and store it (plus 1) in [[NUM_IMAGE_PAGES]]. That is, [[NUM_IMAGE_PAGES]] is the number of pages in the dynamic and static parts of the Z-image.
 
-Then, we read [[NUM_IMAGE_PAGES-1]] consecutive sectors after the header
-into consecutive memory.
-
-Suppose [[Z_HEADER_ADDR]] is [[$2C00]]. We have already read the header sector in. Now
-suppose the base of high memory in the header is [[#$01F6]].
-Then [[NUM_IMAGE_PAGES]] would be [[#$02]], and we would read one sector into memory at [[$2D00]].
-
-In the case of Zork I, [[Z_HEADER_ADDR]] is [[$2C00]], and the base of high memory is [[#$47FF]].
-[[NUM_IMAGE_PAGES]] is thus [[#$48]]. So, we would read 71 more sectors into memory,
+In the case of Zork I, [[Z_HEADER_ADDR]] is [[$2C00]], and so the base of high memory becomes [[#$47FF]]. This has the effect of page-aligning high memory.
+[[NUM_IMAGE_PAGES]] is also thus [[#$48]]. So, we would read 71 more sectors into memory,
 from [[$2D00]] to [[$73FF]].
 
 <<main>>=
 .no_error:
-    LDY      #$05
+    LDY      #HEADER_HIMEM_BASE+1
     LDA      #$FF
-    STA      (Z_HEADER_ADDR),Y
+    STA      (Z_HEADER_ADDR),Y      ; low byte of high memory base always FF.
     DEY
-    LDA      (Z_HEADER_ADDR),Y
+    LDA      (Z_HEADER_ADDR),Y      ; page
     STA      NUM_IMAGE_PAGES
     INC      NUM_IMAGE_PAGES
-    LDA      #$00
+@
+
+Then, we read [[NUM_IMAGE_PAGES-1]] consecutive sectors after the header
+into consecutive memory.
+
+<<main>>=
+    LDA      #$00               ; sector = 0
 
 .read_another_sector:
-    CLC                         ; "START2"
+    CLC                         ; ++sector
     ADC      #$01
     TAX
-    ADC      Z_HEADER_ADDR+1
+    ADC      Z_HEADER_ADDR+1    ; dest_addr = Z_HEADER_ADDR + 256*sector
     STA      SCRATCH2+1
     LDA      Z_HEADER_ADDR
     STA      SCRATCH2
     TXA
     CMP      NUM_IMAGE_PAGES
-    BEQ      .check_bit_0_flag    ; done loading
-    PHA
+    BEQ      .check_debug_flag  ; done loading?
+    PHA                         ; read_sector = sector
     STA      SCRATCH1
     LDA      #$00
     STA      SCRATCH1+1
-    JSR      read_from_sector
+    JSR      read_from_sector   ; read_from_sector(read_sector, dest_addr)
 
     ; Historical note: The original Infocom source code did not check
     ; for an error here.
@@ -983,8 +1020,8 @@ its monitor, which allows debugging, however primitive by our modern standards.
 This part was not in the original Infocom source code.
 
 <<main>>=
-.check_bit_0_flag:
-    LDY      #$01
+.check_debug_flag:
+    LDY      #HEADER_FLAGS1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01
     EOR      #$01
@@ -1002,23 +1039,21 @@ brk:
 @ %def brk
 
 Continuing after the load, we set the 24-bit [[Z_PC]] program counter to its
-initial 16-bit value, which is stored in the header at bytes 6 and 7, bigendian.
+initial 16-bit value, which is stored in the header, big-endian.
 For Zork I, [[Z_PC]] becomes [[#$004859]].
 
 <<main>>=
 .store_initial_z_pc:
-    LDY      #$07
+    LDY      #HEADER_INITIAL_ZPC+1
     LDA      (Z_HEADER_ADDR),Y
     STA      Z_PC
     DEY
     LDA      (Z_HEADER_ADDR),Y
     STA      Z_PC+1
-    LDA      #$00
-    STA      Z_PC+2
+    STOB     #$00, Z_PC+2
 @
 
-Next, we load [[GLOBAL_ZVARS_ADDR]] and [[Z_ABBREV_TABLE]] from the header
-at bytes [[#$0C-$0D]] and [[#$18-$19]], respectively. Again, these are bigendian
+Next, we load [[GLOBAL_ZVARS_ADDR]] and [[Z_ABBREV_TABLE]] from the header addresses. Again, these are big-endian
 values, so get byte-swapped. These are relative to the beginning of the image,
 so we simply add the page of the image address to them. There is no need to add the low
 byte of the header address, since the header already begins on a page boundary.
@@ -1028,7 +1063,7 @@ that [[GLOBAL_ZVARS_ADDR]] is [[$4CDE]] and [[Z_ABBREV_TABLE]] is [[$2CCA]].
 
 <<main>>=
 .store_z_global_vars_addr:
-    LDY      #$0D
+    LDY      #HEADER_GLOBALVARS_ADDR+1
     LDA      (Z_HEADER_ADDR),Y
     STA      GLOBAL_ZVARS_ADDR
     DEY
@@ -1038,7 +1073,7 @@ that [[GLOBAL_ZVARS_ADDR]] is [[$4CDE]] and [[Z_ABBREV_TABLE]] is [[$2CCA]].
     STA      GLOBAL_ZVARS_ADDR+1
 
 .store_z_abbrev_table_addr:
-    LDY      #$19
+    LDY      #HEADER_ABBREVS_ADDR+1
     LDA      (Z_HEADER_ADDR),Y
     STA      Z_ABBREV_TABLE
     DEY
@@ -1048,35 +1083,31 @@ that [[GLOBAL_ZVARS_ADDR]] is [[$4CDE]] and [[Z_ABBREV_TABLE]] is [[$2CCA]].
     STA      Z_ABBREV_TABLE+1
 @
 
-Next, we set [[AFTER_Z_IMAGE_ADDR]] to the page-aligned memory address immediately after the image,
+Next, we set [[HIGH_MEM_ADDR]] to the page-aligned memory address immediately after the image,
 and compare its page to the last viable RAM page. If it is greater, we hit a BRK instruction since there
 isn't enough memory to run the game.
 
-For Zork I, [[AFTER_Z_IMAGE_ADDR]] is [[$7400]].
+For Zork I, [[HIGH_MEM_ADDR]] is [[$7400]].
 
 For a fully-populated Apple II (64k RAM), the last viable RAM page is [[#$BF]].
 
-<<main>>=
-    LDA      #$00
-    STA      AFTER_Z_IMAGE_ADDR
-    LDA      NUM_IMAGE_PAGES
-    CLC
-    ADC      Z_HEADER_ADDR+1
-    STA      AFTER_Z_IMAGE_ADDR+1
-    JSR      locate_last_ram_page
-    SEC
-    SBC      AFTER_Z_IMAGE_ADDR+1
-    BCC      .brk
-@
+Recall earlier that we set up a linked list of cached Z-code pages. This list was 128 pages. However, it is not true that the physical memory can store that many pages. Once we find the last viable RAM page, we determine the number of pages that can be stored in memory.
 
-We then store the difference as the last Z-image page in [[LAST_Z_PAGE]], and the same, plus 1,
+Thus, we store the difference between the last viable RAM page and the page of [[HIGH_MEM_ADDR]] into [[LAST_Z_PAGE]], and the same, plus 1,
 in [[NUM_PAGE_TABLE_ENTRIES]]. We also set the next page table entry of the last page to [[#$FF]].
 
 For Zork I, [[NUM_PAGE_TABLE_ENTRIES]] is [[#$4C]], and [[LAST_Z_PAGE]] is [[#$4B]].
 
-And lastly, we start the interpreter loop by executing the first instruction in z-code.
-
 <<main>>=
+    STOB     #$00, HIGH_MEM_ADDR
+    LDA      NUM_IMAGE_PAGES
+    CLC
+    ADC      Z_HEADER_ADDR+1
+    STA      HIGH_MEM_ADDR+1
+    JSR      locate_last_ram_page
+    SEC
+    SBC      HIGH_MEM_ADDR+1
+    BCC      .brk
     TAY
     INY
     STY      NUM_PAGE_TABLE_ENTRIES
@@ -1084,9 +1115,6 @@ And lastly, we start the interpreter loop by executing the first instruction in 
     STY      LAST_Z_PAGE
     LDA      #$FF
     STA      (NEXT_PAGE_TABLE),Y
-    JMP      do_instruction
-
-<<die>>
 @
 
 To locate the last viable RAM page, we start with [[$C0FF]] in [[SCRATCH2]].
@@ -1122,6 +1150,15 @@ locate_last_ram_page:
     RTS
 @ %def locate_last_ram_addr
 
+The final step of the main routine is to start the interpreter loop by executing the first instruction in z-code.
+
+<<main>>=
+    JMP      do_instruction
+
+<<die>>
+@
+
+
 \chapter{The Z-stack}
 
 The Z-stack is a stack of 16-bit values used by the Z-machine. It is not the same as the
@@ -1136,7 +1173,7 @@ Pushing a 16-bit value onto the stack involves placing the value at the next two
 free locations, low byte first, and then decrementing the stack pointer by 2. So for example, if pushing the value [[#$1234]] onto the stack, and [[Z_SP]] is [[$03E8]], then [[$03E7]] will contain [[#$34]], [[$03E6]] will contain [[#$12]], and [[Z_SP]] will end up as [[$03E6]]. [[STACK_COUNT]] will also be incremented.
 
 The [[push]] routine pushes the 16-byte value in [[SCRATCH2]] onto the stack.
-According to the code, if the number of elements becomes [[#$B4]] (180), the program will hit a BRK instruction.
+According to the code, if the number of values on the stack becomes [[#$B4]] (180), the program will hit a BRK instruction.
 
 <<Push>>=
 push:
@@ -1181,24 +1218,16 @@ pop:
     RTS
 @ %def pop
 
-\chapter{Z-code}
+\chapter{Z-code and the page cache}
 
-Z-code is not stored in memory in a linear fashion. Rather, it is stored in pages of 256
-bytes, in the order that the Z-machine loads them. [[ZCODE_PAGE_ADDR]] is the
-address in memory that the current page of Z-code is stored in.
+As mentioned earlier, [[ZCODE_PAGE_VALID]] is a flag that indicates whether the location in 6502 memory of the current page of Z-code is known. If it is known, it will be in [[ZCODE_PAGE_ADDR]]. Otherwise it has to be found, either in the page cache or on disk.
 
-The [[Z_PC]] 24-bit address is an address into z-code. So, getting the next code byte
-translates to retrieving the byte at [[(ZCODE_PAGE_ADDR) + Z_PC]] and incrementing the low
-byte of [[Z_PC]].
+The [[Z_PC]] 24-bit address is an address into Z-code. So, getting the next code byte
+translates to retrieving the byte at [[ZCODE_PAGE_ADDR]] plus the low byte of [[Z_PC]] and then incrementing [[Z_PC]].
 
-Of course, if the low byte of [[Z_PC]] ends up as 0, we'll need to propagate the increment to
-its other bytes, but also invalidate the current code page.
+Of course, if the low byte of [[Z_PC]] ends up as 0 after the increment, it means we will be crossing over into another page, which means we must invalidate the code page.
 
-This is handled through the [[ZCODE_PAGE_VALID]] flag. If it is zero, then we will need to load
-a page of Z-code into [[ZCODE_PAGE_ADDR]].
-
-As an example, when the Z-machine starts, [[Z_PC]] is [[#$004859]], and [[ZCODE_PAGE_VALID]] is
-[[0]]. This means that we will have to load code page [[#$48]].
+When the Z-machine starts, [[ZCODE_PAGE_VALID]] is zero.
 
 <<Get next code byte>>=
 get_next_code_byte:
@@ -1210,28 +1239,19 @@ get_next_code_byte:
     LDA      (ZCODE_PAGE_ADDR),Y
     INY
     STY      Z_PC
-    BEQ      .invalidate_zcode_page     ; next byte in next page?
+    BEQ      .invalidate_zcode_page     ; will next byte be in next page?
     RTS
 
 .invalidate_zcode_page:
     LDY      #$00
     STY      ZCODE_PAGE_VALID
-    INC      Z_PC+1
-    BNE      .end
-    INC      Z_PC+2
-
-.end:
+    INCW     Z_PC+1
     RTS
 @ %def get_next_code_byte
 
-As an example, on start, [[Z_PC]] is [[#$004859]], so we have to access code page [[#$0048]].
-Since the high byte isn't set, we know that the code page is in memory. If the high byte
-were set, we would have to locate that page in memory, and if it isn't there, we would have
-to load it from disk.
+[[Z_PC]] is a 24-bit address relative to the beginning of the Z-header. This means that Z-code could in theory be stored within the dynamic or static areas of the Z-image. If it is, then we can easily access it, since it was loaded when the game was initially loaded.
 
-But let's suppose that [[Z_PC]] were [[#$014859]]. We would have to access code page [[#$0148]].
-Initially, [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]] are zeroed out, so [[find_index_of_page_table]]
-would return with carry set and the [[A]] register set to [[LAST_Z_PAGE]] ([[#$4B]]).
+In either case, the page we just accessed is placed in the front of the linked list of cached pages. This means that the list is a most-recently-used cache.
 
 <<Get next code byte>>=
 .zcode_page_invalid:
@@ -1239,66 +1259,46 @@ would return with carry set and the [[A]] register set to [[LAST_Z_PAGE]] ([[#$4
     BNE      .find_pc_page_in_page_table
     LDA      Z_PC+1
     CMP      NUM_IMAGE_PAGES
-    BCC      .set_page_addr
+    BCC      .set_page_addr     ; Z_PC is in dynamic or static memory
 
 .find_pc_page_in_page_table:
-    LDA      Z_PC+1
-    STA      SCRATCH2
-    LDA      Z_PC+2
-    STA      SCRATCH2+1
+    MOVW     Z_PC+1, SCRATCH2
     JSR      find_index_of_page_table
     STA      PAGE_TABLE_INDEX
-    BCS      .not_found_in_page_table
+    BCS      .not_found_in_page_table   ; not loaded from disk yet
 
 .set_page_first:
-    JSR      set_page_first
+    JSR      set_page_first     ; move page to head of list
     CLC
     LDA      PAGE_TABLE_INDEX
     ADC      NUM_IMAGE_PAGES
-@ %def .zcode_page_invalid
 
-Once we've ensured that the desired Z-code page is in memory, we can add the
-page to the page of [[Z_HEADER_ADDR]] and store in [[ZCODE_PAGE_ADDR]]. We also
-set the low byte of [[ZCODE_PAGE_ADDR]] to zero since we're guaranteed to be at
-the top of the page. We also set [[ZCODE_PAGE_VALID]] to true. And finally we
-go back to the beginning of the routine to get the next code byte.
-
-<<Get next code byte>>=
 .set_page_addr:
     CLC
     ADC      Z_HEADER_ADDR+1
     STA      ZCODE_PAGE_ADDR+1
-    LDA      #$00
-    STA      ZCODE_PAGE_ADDR
-    LDA      #$FF
-    STA      ZCODE_PAGE_VALID
+    STOB     #$00, ZCODE_PAGE_ADDR
+    STOB     #$FF, ZCODE_PAGE_VALID ; code page is now valid
     JMP      get_next_code_byte
-@ %def .set_page_addr
+@ %def .zcode_page_invalid
 
 If the page we need isn't found in the page table, we need to load it from disk, and it gets
-loaded into [[AFTER_Z_IMAGE_ADDR]] plus [[PAGE_TABLE_INDEX]] pages. On a good read, we store
+loaded into [[HIGH_MEM_ADDR]] plus [[PAGE_TABLE_INDEX]] pages. On a good read, we store
 the z-page value into the page table.
 
 <<Get next code byte>>=
 .not_found_in_page_table:
     CMP      PAGE_TABLE_INDEX2
     BNE      .read_from_disk
-    LDA      #$00
-    STA      ZCODE_PAGE_VALID2
+    STOB     #$00, ZCODE_PAGE_VALID2
 
 .read_from_disk:
-    LDA      AFTER_Z_IMAGE_ADDR
-    STA      SCRATCH2
-    LDA      AFTER_Z_IMAGE_ADDR+1
-    STA      SCRATCH2+1
+    MOVW     HIGH_MEM_ADDR, SCRATCH2
     LDA      PAGE_TABLE_INDEX
     CLC
     ADC      SCRATCH2+1
     STA      SCRATCH2+1
-    LDA      Z_PC+1
-    STA      SCRATCH1
-    LDA      Z_PC+2
-    STA      SCRATCH1+1
+    MOVW     Z_PC+1, SCRATCH1
     JSR      read_from_sector
     BCC      .good_read
     JMP      main
@@ -1313,7 +1313,7 @@ the z-page value into the page table.
     JMP      .set_page_first
 @ %def .not_found_in_page_table
 
-Given a page-aligned address in [[SCRATCH2]], this routine searches through the [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]] for that address, returning the index found
+Given a page-aligned address in [[SCRATCH2]], the [[find_index_of_page_table]] routine searches through the [[PAGE_L_TABLE]] and [[PAGE_H_TABLE]] for that address, returning the index found
 in [[A]] (or [[LAST_Z_PAGE]] if not found). The carry flag is clear if the page was
 found, otherwise it is set.
 
@@ -1386,8 +1386,7 @@ set_page_first:
     RTS
 
 .set_last_z_page:
-    LDA      SCRATCH2+1             ; LAST_Z_PAGE = SCRATCH2H
-    STA      LAST_Z_PAGE
+    MOVB     SCRATCH2+1, LAST_Z_PAGE   ; LAST_Z_PAGE = SCRATCH2H
     RTS
 @ %def set_page_first
 
@@ -1430,10 +1429,7 @@ get_next_code_byte2:
     BCC      .set_page_addr
 
 .find_pc_page_in_page_table:
-    LDA      Z_PC2_H
-    STA      SCRATCH2
-    LDA      Z_PC2_HH
-    STA      SCRATCH2+1
+    MOVW     Z_PC2_H, SCRATCH2
     JSR      find_index_of_page_table
     STA      PAGE_TABLE_INDEX2
     BCS      .not_found_in_page_table
@@ -1448,10 +1444,8 @@ get_next_code_byte2:
     CLC
     ADC      Z_HEADER_ADDR+1
     STA      ZCODE_PAGE_ADDR2+1
-    LDA      #$00
-    STA      ZCODE_PAGE_ADDR2
-    LDA      #$FF
-    STA      ZCODE_PAGE_VALID2
+    STOB     #$00, ZCODE_PAGE_ADDR2
+    STOB     #$FF, ZCODE_PAGE_VALID2
     JMP      get_next_code_byte2
 
 .not_found_in_page_table:
@@ -1461,18 +1455,12 @@ get_next_code_byte2:
     STA      ZCODE_PAGE_VALID
 
 .read_from_disk:
-    LDA      AFTER_Z_IMAGE_ADDR
-    STA      SCRATCH2
-    LDA      AFTER_Z_IMAGE_ADDR+1
-    STA      SCRATCH2+1
+    MOVW     HIGH_MEM_ADDR, SCRATCH2
     LDA      PAGE_TABLE_INDEX2
     CLC
     ADC      SCRATCH2+1
     STA      SCRATCH2+1
-    LDA      Z_PC2_H
-    STA      SCRATCH1
-    LDA      Z_PC2_HH
-    STA      SCRATCH1+1
+    MOVW     Z_PC2_H, SCRATCH1
     JSR      read_from_sector
     BCC      .good_read
     JMP      main
@@ -1509,12 +1497,9 @@ The [[load_address]] routine copies [[SCRATCH2]] to [[Z_PC2]].
 load_address:
     SUBROUTINE
 
-    LDA      SCRATCH2
-    STA      Z_PC2_L
-    LDA      SCRATCH2+1
-    STA      Z_PC2_H
-    LDA      #$00
-    STA      Z_PC2_HH
+    MOVB     SCRATCH2, Z_PC2_L
+    MOVB     SCRATCH2+1, Z_PC2_H
+    STOB     #$00, Z_PC2_HH
 @ %def load_address
 
 The [[load_packed_address]] routine multiplies [[SCRATCH2]] by 2 and stores the result in [[Z_PC2]].
@@ -1523,8 +1508,7 @@ The [[load_packed_address]] routine multiplies [[SCRATCH2]] by 2 and stores the 
 invalidate_zcode_page2:
     SUBROUTINE
 
-    LDA      #$00
-    STA      ZCODE_PAGE_VALID2
+    STOB     #$00, ZCODE_PAGE_VALID2
     RTS
 
 load_packed_address:
@@ -1591,8 +1575,7 @@ home:
     SUBROUTINE
 
     JSR      HOME
-    LDA      WNDTOP
-    STA      CURR_LINE
+    MOVB     WNDTOP, CURR_LINE
     RTS
 @ %def home
 
@@ -1605,18 +1588,12 @@ the cursor.
 reset_window:
     SUBROUTINE
 
-    LDA      #1
-    STA      WNDTOP
-    LDA      #0
-    STA      WNDLFT
-    LDA      #40
-    STA      WNDWDTH
-    LDA      #24
-    STA      WNDBTM
-    LDA      #$3E      ; '>'
-    STA      PROMPT
-    LDA      #$FF
-    STA      INVFLG
+    STOB     #1, WNDTOP
+    STOB     #0, WNDLFT
+    STOB     #40, WNDWDTH
+    STOB     #24, WNDBTM
+    STOB     #$3E, PROMPT  ; '>'
+    STOB     #$FF, INVFLG
     JSR      home
     RTS
 @ %def reset_window
@@ -1687,14 +1664,8 @@ printer_card_initialized_flag:
 dump_buffer_to_printer:
     SUBROUTINE
 
-    LDA      CSW
-    PHA
-    LDA      CSW+1
-    PHA
-    LDA      PRINTER_CSW
-    STA      CSW
-    LDA      PRINTER_CSW+1
-    STA      CSW+1
+    PSHW     CSW
+    MOVW     PRINTER_CSW, CSW
     LDX      #$00
     LDA      printer_card_initialized_flag
     BNE      .loop
@@ -1703,8 +1674,7 @@ dump_buffer_to_printer:
 .printer_set_80_column_output:
     LDA      #$09      ; ctrl-I
     JSR      COUT
-    LDA      #$91      ; 'Q'
-    STA      $0779     ; Scratchpad RAM for slot 1.
+    STOB     #$91, $0779      ; 'Q' into scratchpad RAM for slot 1.
     LDA      #$B8      ; '8'
     JSR      COUT
     LDA      #$B0      ; '0'
@@ -1721,14 +1691,8 @@ dump_buffer_to_printer:
     JMP      .loop
 
 .done:
-    LDA      CSW
-    STA      PRINTER_CSW
-    LDA      CSW+1
-    STA      PRINTER_CSW+1
-    PLA
-    STA      CSW+1
-    PLA
-    STA      CSW
+    MOVW     CSW, PRINTER_CSW
+    PULW     CSW
     RTS
 @ %def dump_buffer_to_printer printer_card_initialized_flag
 
@@ -1742,7 +1706,7 @@ header. Presumably this bit is set (in the Z-code itself) when you type
 dump_buffer_line:
     SUBROUTINE
 
-    LDY      #$11
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01
     BEQ      .skip_printer
@@ -1774,21 +1738,17 @@ dump_buffer_with_more:
     STOW     string_more, SCRATCH2
     LDX      #6
 
-    LDA      #$3F
-    STA      INVFLG
+    STOB     #$3F, INVFLG
     JSR      cout_string    ; print [MORE] in inverse text
+    STOB     #$FF, INVFLG
 
-    LDA      #$FF
-    STA      INVFLG
-
-    JSR      RDKEY      ; wait for keypress
+    JSR      RDKEY          ; wait for keypress
     LDA      CH
     SEC
     SBC      #$06
     STA      CH             ; move cursor back 6
-    JSR      CLREOL     ; and clear the line
-    LDA      WNDTOP
-    STA      CURR_LINE
+    JSR      CLREOL         ; and clear the line
+    MOVB     WNDTOP, CURR_LINE
     INC      CURR_LINE      ; start at top of screen
 
 .good_to_go:
@@ -1816,31 +1776,19 @@ newline to the printer as well. Note that we've already output the line to the
 printer in [[dump_buffer_line]], so we only need to output a newline here.
 
 <<Dump buffer with more>>=
-    LDY      #$11
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01
     BEQ      .reset_buffer_end
 
-    LDA      CSW
-    PHA
-    LDA      CSW+1
-    PHA
-    LDA      PRINTER_CSW
-    STA      CSW
-    LDA      PRINTER_CSW+1
-    STA      CSW+1
+    PSHW     CSW
+    MOVW     PRINTER_CSW, CSW
 
     LDA      #$8D
     JSR      COUT
 
-    LDA      CSW
-    STA      PRINTER_CSW
-    LDA      CSW+1
-    STA      PRINTER_CSW+1
-    PLA
-    STA      CSW+1
-    PLA
-    STA      CSW
+    MOVW     CSW, PRINTER_CSW
+    PULW     CSW
 
 .reset_buffer_end:
 @
@@ -2406,7 +2354,7 @@ read_line:
     INX                         ; X = num of chars in input
     TXA
     PHA                         ; save X
-    LDY      #HEADER_FLAGS2_OFFSET+1
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01               ; Mask for transcript on
     BEQ      .continue
@@ -3041,7 +2989,7 @@ stores it in [[SCRATCH2]].
 get_dictionary_addr:
     SUBROUTINE
 
-    LDY      #HEADER_DICT_OFFSET
+    LDY      #HEADER_DICT_ADDR
     LDA      (Z_HEADER_ADDR),Y
     STA      SCRATCH2+1
     INY
@@ -4518,7 +4466,7 @@ to [[SCRATCH2]]. The resulting address is thus in [[SCRATCH2]].
 
 <<Get object address>>=
 .continue2:
-    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
+    LDY      #HEADER_OBJECT_TABLE_ADDR+1
     LDA      (Z_HEADER_ADDR),Y
     CLC
     ADC      SCRATCH2
@@ -5072,7 +5020,7 @@ in the [[X]] register.
 
 <<Instruction save>>=
     LDX      #$00
-    LDY      #$00
+    LDY      #HEADER_VERSION
     LDA      (Z_HEADER_ADDR),Y
     STA      BUFF_AREA,X
     INX
@@ -5198,7 +5146,7 @@ The next step is to read the first sector and check the z-machine version number
 
 .continue:
     LDX      #$00
-    LDY      #$00
+    LDY      #HEADER_VERSION
     LDA      (Z_HEADER_ADDR),Y
     CMP      BUFF_AREA,X
     BEQ      .continue2
@@ -5209,7 +5157,7 @@ We also save the current game flags in the header at byte [[#$11]].
 
 <<Instruction restore>>=
 .continue2:
-    LDY      #$11                   ; Game flags.
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     STA      SIGN_BIT
 @
@@ -5270,7 +5218,7 @@ the way up to the base of static memory given by the header.
 
 <<Instruction restore>>=
     MOVW     Z_HEADER_ADDR, SCRATCH2
-    LDY      #$0E
+    LDY      #HEADER_STATIC_MEM_BASE
     LDA      (Z_HEADER_ADDR),Y
     STA      SCRATCH3               ; big-endian!
     INC      SCRATCH3
@@ -5288,7 +5236,7 @@ before the actual restore.
 
 <<Instruction restore>>=
     LDA      SIGN_BIT
-    LDY      #$11
+    LDY      #HEADER_FLAGS2+1
     STA      (Z_HEADER_ADDR),Y
 @
 
@@ -6553,7 +6501,7 @@ into the word containing the property default. Then we store it and we're done.
 
 <<Instruction get prop>>=
 .get_default:
-    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
+    LDY      #HEADER_OBJECT_TABLE_ADDR+1
     CLC
     LDA      (Z_HEADER_ADDR),Y
     ADC      Z_HEADER_ADDR
@@ -6950,7 +6898,7 @@ ZCODE_PAGE_VALID2   EQU     $96
 PAGE_TABLE_INDEX2   EQU     $97
 GLOBAL_ZVARS_ADDR   EQU     $98     ; 2 bytes
 LOCAL_ZVARS         EQU     $9A     ; 30 bytes
-AFTER_Z_IMAGE_ADDR  EQU     $B8
+HIGH_MEM_ADDR       EQU     $B8
 Z_HEADER_ADDR       EQU     $BA     ; 2 bytes
 NUM_IMAGE_PAGES     EQU     $BC
 NUM_PAGE_TABLE_ENTRIES EQU  $BD
@@ -6985,20 +6933,26 @@ PRINTER_CSW         EQU     $EE     ; 2 bytes
 TMP_Z_PC            EQU     $F0     ; 3 bytes
 BUFF_AREA           EQU     $0200
 RWTS                EQU     $2900
-@ %def DEBUG_JUMP SECTORS_PER_TRACK CURR_OPCODE OPERAND_COUNT OPERAND0 OPERAND1 OPERAND2 OPERAND3 Z_PC ZCODE_PAGE_ADDR ZCODE_PAGE_VALID PAGE_TABLE_INDEX Z_PC2_H Z_PC2_HH Z_PC2_L ZCODE_PAGE_ADDR2 ZCODE_PAGE_VALID2 PAGE_TABLE_INDEX2 GLOBAL_ZVARS_ADDR LOCAL_ZVARS AFTER_Z_IMAGE_ADDR CURR_DISK_BUFF_ADDR NUM_IMAGE_PAGES FIRST_Z_PAGE LAST_Z_PAGE PAGE_L_TABLE PAGE_H_TABLE NEXT_PAGE_TABLE PREV_PAGE_TABLE STACK_COUNT Z_SP FRAME_Z_SP FRAME_STACK_COUNT SHIFT_ALPHABET LOCKED_ALPHABET ZDECOMPRESS_STATE ZCHARS_L ZCHARS_H ZCHAR_SCRATCH1 ZCHAR_SCRATCH2 Z_ABBREV_TABLE SCRATCH1 SCRATCH2 SCRATCH3 BUFF_END BUFF_LINE_LEN CURR_LINE PRINTER_CSW TMP_Z_PC BUFF_AREA RWTS
+@ %def DEBUG_JUMP SECTORS_PER_TRACK CURR_OPCODE OPERAND_COUNT OPERAND0 OPERAND1 OPERAND2 OPERAND3 Z_PC ZCODE_PAGE_ADDR ZCODE_PAGE_VALID PAGE_TABLE_INDEX Z_PC2_H Z_PC2_HH Z_PC2_L ZCODE_PAGE_ADDR2 ZCODE_PAGE_VALID2 PAGE_TABLE_INDEX2 GLOBAL_ZVARS_ADDR LOCAL_ZVARS HIGH_MEM_ADDR CURR_DISK_BUFF_ADDR NUM_IMAGE_PAGES FIRST_Z_PAGE LAST_Z_PAGE PAGE_L_TABLE PAGE_H_TABLE NEXT_PAGE_TABLE PREV_PAGE_TABLE STACK_COUNT Z_SP FRAME_Z_SP FRAME_STACK_COUNT SHIFT_ALPHABET LOCKED_ALPHABET ZDECOMPRESS_STATE ZCHARS_L ZCHARS_H ZCHAR_SCRATCH1 ZCHAR_SCRATCH2 Z_ABBREV_TABLE SCRATCH1 SCRATCH2 SCRATCH3 BUFF_END BUFF_LINE_LEN CURR_LINE PRINTER_CSW TMP_Z_PC BUFF_AREA RWTS
 
 <<Table offsets>>=
-HEADER_DICT_OFFSET      EQU     $08
-HEADER_OBJECT_TABLE_ADDR_OFFSET  EQU    $0B
+HEADER_VERSION          EQU     $00
+HEADER_FLAGS1           EQU     $01
+HEADER_HIMEM_BASE       EQU     $04
+HEADER_INITIAL_ZPC      EQU     $06
+HEADER_DICT_ADDR        EQU     $08
+HEADER_OBJECT_TABLE_ADDR EQU    $0A
+HEADER_GLOBALVARS_ADDR  EQU     $0C
 HEADER_STATIC_MEM_BASE  EQU     $0E
-HEADER_FLAGS2_OFFSET    EQU     $10
+HEADER_FLAGS2           EQU     $10
+HEADER_ABBREVS_ADDR     EQU     $18
 FIRST_OBJECT_OFFSET     EQU     $35
 
 OBJECT_PARENT_OFFSET    EQU     $04
 OBJECT_SIBLING_OFFSET   EQU     $05
 OBJECT_CHILD_OFFSET     EQU     $06
 OBJECT_PROPS_OFFSET     EQU     $07
-@ %def HEADER_DICT_OFFSET HEADER_OBJECT_TABLE_ADDR_OFFSET HEADER_STATIC_MEM_BASE HEADER_FLAGS2_OFFSET FIRST_OBJECT_OFFSET OBJECT_PARENT_OFFSET OBJECT_SIBLING_OFFSET OBJECT_CHILD_OFFSET OBJECT_PROPS_OFFSET
+@ %def HEADER_DICT_ADDR HEADER_OBJECT_TABLE_ADDR HEADER_STATIC_MEM_BASE HEADER_FLAGS2 FIRST_OBJECT_OFFSET OBJECT_PARENT_OFFSET OBJECT_SIBLING_OFFSET OBJECT_CHILD_OFFSET OBJECT_PROPS_OFFSET
 
 <<variable numbers>>=
 VAR_CURR_ROOM       EQU     $10

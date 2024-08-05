@@ -189,7 +189,7 @@ ZCODE_PAGE_VALID2   EQU     $96
 PAGE_TABLE_INDEX2   EQU     $97
 GLOBAL_ZVARS_ADDR   EQU     $98     ; 2 bytes
 LOCAL_ZVARS         EQU     $9A     ; 30 bytes
-AFTER_Z_IMAGE_ADDR  EQU     $B8
+HIGH_MEM_ADDR       EQU     $B8
 Z_HEADER_ADDR       EQU     $BA     ; 2 bytes
 NUM_IMAGE_PAGES     EQU     $BC
 NUM_PAGE_TABLE_ENTRIES EQU  $BD
@@ -224,10 +224,16 @@ PRINTER_CSW         EQU     $EE     ; 2 bytes
 TMP_Z_PC            EQU     $F0     ; 3 bytes
 BUFF_AREA           EQU     $0200
 RWTS                EQU     $2900
-HEADER_DICT_OFFSET      EQU     $08
-HEADER_OBJECT_TABLE_ADDR_OFFSET  EQU    $0B
+HEADER_VERSION          EQU     $00
+HEADER_FLAGS1           EQU     $01
+HEADER_HIMEM_BASE       EQU     $04
+HEADER_INITIAL_ZPC      EQU     $06
+HEADER_DICT_ADDR        EQU     $08
+HEADER_OBJECT_TABLE_ADDR EQU    $0A
+HEADER_GLOBALVARS_ADDR  EQU     $0C
 HEADER_STATIC_MEM_BASE  EQU     $0E
-HEADER_FLAGS2_OFFSET    EQU     $10
+HEADER_FLAGS2           EQU     $10
+HEADER_ABBREVS_ADDR     EQU     $18
 FIRST_OBJECT_OFFSET     EQU     $35
 
 OBJECT_PARENT_OFFSET    EQU     $04
@@ -306,31 +312,31 @@ main:
     BCC      .no_error
     JMP      main
 .no_error:
-    LDY      #$05
+    LDY      #HEADER_HIMEM_BASE+1
     LDA      #$FF
-    STA      (Z_HEADER_ADDR),Y
+    STA      (Z_HEADER_ADDR),Y      ; low byte of high memory base always FF.
     DEY
-    LDA      (Z_HEADER_ADDR),Y
+    LDA      (Z_HEADER_ADDR),Y      ; page
     STA      NUM_IMAGE_PAGES
     INC      NUM_IMAGE_PAGES
-    LDA      #$00
+    LDA      #$00               ; sector = 0
 
 .read_another_sector:
-    CLC                         ; "START2"
+    CLC                         ; ++sector
     ADC      #$01
     TAX
-    ADC      Z_HEADER_ADDR+1
+    ADC      Z_HEADER_ADDR+1    ; dest_addr = Z_HEADER_ADDR + 256*sector
     STA      SCRATCH2+1
     LDA      Z_HEADER_ADDR
     STA      SCRATCH2
     TXA
     CMP      NUM_IMAGE_PAGES
-    BEQ      .check_bit_0_flag    ; done loading
-    PHA
+    BEQ      .check_debug_flag  ; done loading?
+    PHA                         ; read_sector = sector
     STA      SCRATCH1
     LDA      #$00
     STA      SCRATCH1+1
-    JSR      read_from_sector
+    JSR      read_from_sector   ; read_from_sector(read_sector, dest_addr)
 
     ; Historical note: The original Infocom source code did not check
     ; for an error here.
@@ -341,23 +347,22 @@ main:
 .no_error2:
     PLA
     JMP      .read_another_sector
-.check_bit_0_flag:
-    LDY      #$01
+.check_debug_flag:
+    LDY      #HEADER_FLAGS1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01
     EOR      #$01
     BEQ      .brk
 .store_initial_z_pc:
-    LDY      #$07
+    LDY      #HEADER_INITIAL_ZPC+1
     LDA      (Z_HEADER_ADDR),Y
     STA      Z_PC
     DEY
     LDA      (Z_HEADER_ADDR),Y
     STA      Z_PC+1
-    LDA      #$00
-    STA      Z_PC+2
+    STOB     #$00, Z_PC+2
 .store_z_global_vars_addr:
-    LDY      #$0D
+    LDY      #HEADER_GLOBALVARS_ADDR+1
     LDA      (Z_HEADER_ADDR),Y
     STA      GLOBAL_ZVARS_ADDR
     DEY
@@ -367,7 +372,7 @@ main:
     STA      GLOBAL_ZVARS_ADDR+1
 
 .store_z_abbrev_table_addr:
-    LDY      #$19
+    LDY      #HEADER_ABBREVS_ADDR+1
     LDA      (Z_HEADER_ADDR),Y
     STA      Z_ABBREV_TABLE
     DEY
@@ -375,15 +380,14 @@ main:
     CLC
     ADC      Z_HEADER_ADDR+1
     STA      Z_ABBREV_TABLE+1
-    LDA      #$00
-    STA      AFTER_Z_IMAGE_ADDR
+    STOB     #$00, HIGH_MEM_ADDR
     LDA      NUM_IMAGE_PAGES
     CLC
     ADC      Z_HEADER_ADDR+1
-    STA      AFTER_Z_IMAGE_ADDR+1
+    STA      HIGH_MEM_ADDR+1
     JSR      locate_last_ram_page
     SEC
-    SBC      AFTER_Z_IMAGE_ADDR+1
+    SBC      HIGH_MEM_ADDR+1
     BCC      .brk
     TAY
     INY
@@ -1421,7 +1425,7 @@ instr_get_prop:
     JSR      next_property
     JMP      .loop
 .get_default:
-    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
+    LDY      #HEADER_OBJECT_TABLE_ADDR+1
     CLC
     LDA      (Z_HEADER_ADDR),Y
     ADC      Z_HEADER_ADDR
@@ -1977,7 +1981,7 @@ is_dict_separator:
 get_dictionary_addr:
     SUBROUTINE
 
-    LDY      #HEADER_DICT_OFFSET
+    LDY      #HEADER_DICT_ADDR
     LDA      (Z_HEADER_ADDR),Y
     STA      SCRATCH2+1
     INY
@@ -2349,7 +2353,7 @@ get_object_addr:
     BCC      .continue2
     INC      SCRATCH2+1
 .continue2:
-    LDY      #HEADER_OBJECT_TABLE_ADDR_OFFSET
+    LDY      #HEADER_OBJECT_TABLE_ADDR+1
     LDA      (Z_HEADER_ADDR),Y
     CLC
     ADC      SCRATCH2
@@ -2421,67 +2425,52 @@ get_next_code_byte:
     LDA      (ZCODE_PAGE_ADDR),Y
     INY
     STY      Z_PC
-    BEQ      .invalidate_zcode_page     ; next byte in next page?
+    BEQ      .invalidate_zcode_page     ; will next byte be in next page?
     RTS
 
 .invalidate_zcode_page:
     LDY      #$00
     STY      ZCODE_PAGE_VALID
-    INC      Z_PC+1
-    BNE      .end
-    INC      Z_PC+2
-
-.end:
+    INCW     Z_PC+1
     RTS
 .zcode_page_invalid:
     LDA      Z_PC+2
     BNE      .find_pc_page_in_page_table
     LDA      Z_PC+1
     CMP      NUM_IMAGE_PAGES
-    BCC      .set_page_addr
+    BCC      .set_page_addr     ; Z_PC is in dynamic or static memory
 
 .find_pc_page_in_page_table:
-    LDA      Z_PC+1
-    STA      SCRATCH2
-    LDA      Z_PC+2
-    STA      SCRATCH2+1
+    MOVW     Z_PC+1, SCRATCH2
     JSR      find_index_of_page_table
     STA      PAGE_TABLE_INDEX
-    BCS      .not_found_in_page_table
+    BCS      .not_found_in_page_table   ; not loaded from disk yet
 
 .set_page_first:
-    JSR      set_page_first
+    JSR      set_page_first     ; move page to head of list
     CLC
     LDA      PAGE_TABLE_INDEX
     ADC      NUM_IMAGE_PAGES
+
 .set_page_addr:
     CLC
     ADC      Z_HEADER_ADDR+1
     STA      ZCODE_PAGE_ADDR+1
-    LDA      #$00
-    STA      ZCODE_PAGE_ADDR
-    LDA      #$FF
-    STA      ZCODE_PAGE_VALID
+    STOB     #$00, ZCODE_PAGE_ADDR
+    STOB     #$FF, ZCODE_PAGE_VALID ; code page is now valid
     JMP      get_next_code_byte
 .not_found_in_page_table:
     CMP      PAGE_TABLE_INDEX2
     BNE      .read_from_disk
-    LDA      #$00
-    STA      ZCODE_PAGE_VALID2
+    STOB     #$00, ZCODE_PAGE_VALID2
 
 .read_from_disk:
-    LDA      AFTER_Z_IMAGE_ADDR
-    STA      SCRATCH2
-    LDA      AFTER_Z_IMAGE_ADDR+1
-    STA      SCRATCH2+1
+    MOVW     HIGH_MEM_ADDR, SCRATCH2
     LDA      PAGE_TABLE_INDEX
     CLC
     ADC      SCRATCH2+1
     STA      SCRATCH2+1
-    LDA      Z_PC+1
-    STA      SCRATCH1
-    LDA      Z_PC+2
-    STA      SCRATCH1+1
+    MOVW     Z_PC+1, SCRATCH1
     JSR      read_from_sector
     BCC      .good_read
     JMP      main
@@ -2497,17 +2486,13 @@ get_next_code_byte:
 load_address:
     SUBROUTINE
 
-    LDA      SCRATCH2
-    STA      Z_PC2_L
-    LDA      SCRATCH2+1
-    STA      Z_PC2_H
-    LDA      #$00
-    STA      Z_PC2_HH
+    MOVB     SCRATCH2, Z_PC2_L
+    MOVB     SCRATCH2+1, Z_PC2_H
+    STOB     #$00, Z_PC2_HH
 invalidate_zcode_page2:
     SUBROUTINE
 
-    LDA      #$00
-    STA      ZCODE_PAGE_VALID2
+    STOB     #$00, ZCODE_PAGE_VALID2
     RTS
 
 load_packed_address:
@@ -2563,10 +2548,7 @@ get_next_code_byte2:
     BCC      .set_page_addr
 
 .find_pc_page_in_page_table:
-    LDA      Z_PC2_H
-    STA      SCRATCH2
-    LDA      Z_PC2_HH
-    STA      SCRATCH2+1
+    MOVW     Z_PC2_H, SCRATCH2
     JSR      find_index_of_page_table
     STA      PAGE_TABLE_INDEX2
     BCS      .not_found_in_page_table
@@ -2581,10 +2563,8 @@ get_next_code_byte2:
     CLC
     ADC      Z_HEADER_ADDR+1
     STA      ZCODE_PAGE_ADDR2+1
-    LDA      #$00
-    STA      ZCODE_PAGE_ADDR2
-    LDA      #$FF
-    STA      ZCODE_PAGE_VALID2
+    STOB     #$00, ZCODE_PAGE_ADDR2
+    STOB     #$FF, ZCODE_PAGE_VALID2
     JMP      get_next_code_byte2
 
 .not_found_in_page_table:
@@ -2594,18 +2574,12 @@ get_next_code_byte2:
     STA      ZCODE_PAGE_VALID
 
 .read_from_disk:
-    LDA      AFTER_Z_IMAGE_ADDR
-    STA      SCRATCH2
-    LDA      AFTER_Z_IMAGE_ADDR+1
-    STA      SCRATCH2+1
+    MOVW     HIGH_MEM_ADDR, SCRATCH2
     LDA      PAGE_TABLE_INDEX2
     CLC
     ADC      SCRATCH2+1
     STA      SCRATCH2+1
-    LDA      Z_PC2_H
-    STA      SCRATCH1
-    LDA      Z_PC2_HH
-    STA      SCRATCH1+1
+    MOVW     Z_PC2_H, SCRATCH1
     JSR      read_from_sector
     BCC      .good_read
     JMP      main
@@ -2654,8 +2628,7 @@ set_page_first:
     RTS
 
 .set_last_z_page:
-    LDA      SCRATCH2+1             ; LAST_Z_PAGE = SCRATCH2H
-    STA      LAST_Z_PAGE
+    MOVB     SCRATCH2+1, LAST_Z_PAGE   ; LAST_Z_PAGE = SCRATCH2H
     RTS
 find_index_of_page_table:
     SUBROUTINE
@@ -3206,7 +3179,7 @@ buffer_char_set_buffer_end:
 dump_buffer_line:
     SUBROUTINE
 
-    LDY      #$11
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01
     BEQ      .skip_printer
@@ -3221,14 +3194,8 @@ printer_card_initialized_flag:
 dump_buffer_to_printer:
     SUBROUTINE
 
-    LDA      CSW
-    PHA
-    LDA      CSW+1
-    PHA
-    LDA      PRINTER_CSW
-    STA      CSW
-    LDA      PRINTER_CSW+1
-    STA      CSW+1
+    PSHW     CSW
+    MOVW     PRINTER_CSW, CSW
     LDX      #$00
     LDA      printer_card_initialized_flag
     BNE      .loop
@@ -3237,8 +3204,7 @@ dump_buffer_to_printer:
 .printer_set_80_column_output:
     LDA      #$09      ; ctrl-I
     JSR      COUT
-    LDA      #$91      ; 'Q'
-    STA      $0779     ; Scratchpad RAM for slot 1.
+    STOB     #$91, $0779      ; 'Q' into scratchpad RAM for slot 1.
     LDA      #$B8      ; '8'
     JSR      COUT
     LDA      #$B0      ; '0'
@@ -3255,14 +3221,8 @@ dump_buffer_to_printer:
     JMP      .loop
 
 .done:
-    LDA      CSW
-    STA      PRINTER_CSW
-    LDA      CSW+1
-    STA      PRINTER_CSW+1
-    PLA
-    STA      CSW+1
-    PLA
-    STA      CSW
+    MOVW     CSW, PRINTER_CSW
+    PULW     CSW
     RTS
 dump_buffer_to_screen:
     SUBROUTINE
@@ -3295,21 +3255,17 @@ dump_buffer_with_more:
     STOW     string_more, SCRATCH2
     LDX      #6
 
-    LDA      #$3F
-    STA      INVFLG
+    STOB     #$3F, INVFLG
     JSR      cout_string    ; print [MORE] in inverse text
+    STOB     #$FF, INVFLG
 
-    LDA      #$FF
-    STA      INVFLG
-
-    JSR      RDKEY      ; wait for keypress
+    JSR      RDKEY          ; wait for keypress
     LDA      CH
     SEC
     SBC      #$06
     STA      CH             ; move cursor back 6
-    JSR      CLREOL     ; and clear the line
-    LDA      WNDTOP
-    STA      CURR_LINE
+    JSR      CLREOL         ; and clear the line
+    MOVB     WNDTOP, CURR_LINE
     INC      CURR_LINE      ; start at top of screen
 
 .good_to_go:
@@ -3323,31 +3279,19 @@ dump_buffer_with_more:
     JSR      COUT1
 
 .skip_newline:
-    LDY      #$11
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01
     BEQ      .reset_buffer_end
 
-    LDA      CSW
-    PHA
-    LDA      CSW+1
-    PHA
-    LDA      PRINTER_CSW
-    STA      CSW
-    LDA      PRINTER_CSW+1
-    STA      CSW+1
+    PSHW     CSW
+    MOVW     PRINTER_CSW, CSW
 
     LDA      #$8D
     JSR      COUT
 
-    LDA      CSW
-    STA      PRINTER_CSW
-    LDA      CSW+1
-    STA      PRINTER_CSW+1
-    PLA
-    STA      CSW+1
-    PLA
-    STA      CSW
+    MOVW     CSW, PRINTER_CSW
+    PULW     CSW
 
 .reset_buffer_end:
     LDX      #$00
@@ -3356,8 +3300,7 @@ home:
     SUBROUTINE
 
     JSR      HOME
-    LDA      WNDTOP
-    STA      CURR_LINE
+    MOVB     WNDTOP, CURR_LINE
     RTS
 sScore:
     DC       "SCORE:"
@@ -3439,7 +3382,7 @@ read_line:
     INX                         ; X = num of chars in input
     TXA
     PHA                         ; save X
-    LDY      #HEADER_FLAGS2_OFFSET+1
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     AND      #$01               ; Mask for transcript on
     BEQ      .continue
@@ -3484,18 +3427,12 @@ read_line:
 reset_window:
     SUBROUTINE
 
-    LDA      #1
-    STA      WNDTOP
-    LDA      #0
-    STA      WNDLFT
-    LDA      #40
-    STA      WNDWDTH
-    LDA      #24
-    STA      WNDBTM
-    LDA      #$3E      ; '>'
-    STA      PROMPT
-    LDA      #$FF
-    STA      INVFLG
+    STOB     #1, WNDTOP
+    STOB     #0, WNDLFT
+    STOB     #40, WNDWDTH
+    STOB     #24, WNDBTM
+    STOB     #$3E, PROMPT  ; '>'
+    STOB     #$FF, INVFLG
     JSR      home
     RTS
 iob:
@@ -3790,7 +3727,7 @@ instr_save:
 
     JSR      please_insert_save_diskette
     LDX      #$00
-    LDY      #$00
+    LDY      #HEADER_VERSION
     LDA      (Z_HEADER_ADDR),Y
     STA      BUFF_AREA,X
     INX
@@ -3861,13 +3798,13 @@ instr_restore:
 
 .continue:
     LDX      #$00
-    LDY      #$00
+    LDY      #HEADER_VERSION
     LDA      (Z_HEADER_ADDR),Y
     CMP      BUFF_AREA,X
     BEQ      .continue2
     JMP      .fail
 .continue2:
-    LDY      #$11                   ; Game flags.
+    LDY      #HEADER_FLAGS2+1
     LDA      (Z_HEADER_ADDR),Y
     STA      SIGN_BIT
     INX
@@ -3895,7 +3832,7 @@ instr_restore:
     LDY      #$68
     JSR      copy_data_from_buff
     MOVW     Z_HEADER_ADDR, SCRATCH2
-    LDY      #$0E
+    LDY      #HEADER_STATIC_MEM_BASE
     LDA      (Z_HEADER_ADDR),Y
     STA      SCRATCH3               ; big-endian!
     INC      SCRATCH3
@@ -3907,7 +3844,7 @@ instr_restore:
     DEC      SCRATCH3
     BNE      .loop
     LDA      SIGN_BIT
-    LDY      #$11
+    LDY      #HEADER_FLAGS2+1
     STA      (Z_HEADER_ADDR),Y
     JSR      please_reinsert_game_diskette
     JMP      branch
