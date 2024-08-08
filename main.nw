@@ -67,7 +67,7 @@
 
 \section{Introduction}
 
-\textbf{Zork I: The Great Underground Empire} was an Infocom text adventure originally written as part of Zork in 1977 by Tim Anderson, Marc Blank, Bruce Daniels, and Dave Lebling. The game runs under a virtual machine called the Z-Machine. Thus, only the Z-Machine interpreter needed to be ported for the game to be playable on various machines.
+\textbf{Zork I: The Great Underground Empire} was an Infocom text adventure originally written as port of Zork in 1977 by Tim Anderson, Marc Blank, Bruce Daniels, and Dave Lebling. The game runs under a virtual machine called the Z-Machine. Thus, only the Z-Machine interpreter needed to be ported for the game to be playable on various machines.
 
 The purpose of this document is to reverse engineer the Z-Machine interpreter
 found in the revision 15 version of Zork I for the Apple II. The disk image used is
@@ -135,7 +135,7 @@ Also note that the [[--skew]] option is used for [[main.bin]] because the sector
 \section{Zero page temporaries}
 
 Zero-page consists essentially of global variables. Sometimes we need local
-temporaries, and Apple II programs mostly doesn't use the stack for those. Rather,
+temporaries, and Apple II programs mostly don't use the stack for those. Rather,
 some ``global'' variables are reserved for temporaries. You might see multiple
 symbols equated to a single zero-page location. The names of such symbols are
 used to make sense within their context.
