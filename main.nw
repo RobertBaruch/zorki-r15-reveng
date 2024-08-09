@@ -67,7 +67,7 @@
 
 \section{Introduction}
 
-\textbf{Zork I: The Great Underground Empire} was an Infocom text adventure originally written as port of Zork in 1977 by Tim Anderson, Marc Blank, Bruce Daniels, and Dave Lebling. The game runs under a virtual machine called the Z-Machine. Thus, only the Z-Machine interpreter needed to be ported for the game to be playable on various machines.
+\textbf{Zork I: The Great Underground Empire} was an Infocom text adventure, one section of the game originally written as Zork in 1977 by Tim Anderson, Marc Blank, Bruce Daniels, and Dave Lebling. The game runs under a virtual machine called the Z-Machine. Thus, only the Z-Machine interpreter needed to be ported for the game to be playable on various machines.
 
 The purpose of this document is to reverse engineer the Z-Machine interpreter
 found in the revision 15 version of Zork I for the Apple II. The disk image used is
